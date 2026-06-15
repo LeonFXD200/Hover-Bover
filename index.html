@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hover Bover</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0d1b2a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: monospace;
+        overflow: hidden;
+      }
+      #game {
+        image-rendering: pixelated;
+        /* Scale the fixed 480x392 canvas up to the largest size that fits the
+           window, keeping its aspect ratio and crisp pixels. The canvas's
+           intrinsic ratio is preserved by setting only the width
+           (480/392 ≈ 1.2245, so 96vh of height ≈ 117.6vh of width). */
+        /* !important to beat the inline width/height Kaplay sets on the canvas. */
+        width: min(96vw, 117.6vh) !important;
+        height: auto !important;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
