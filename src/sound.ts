@@ -42,4 +42,16 @@ export const sfx = {
       setTimeout(() => blip(f, 0.25, "triangle"), i * 160),
     );
   },
+  // Short rising fanfare when a level is cleared.
+  level: () => {
+    [523, 659, 784].forEach((f, i) =>
+      setTimeout(() => blip(f, 0.12, "square"), i * 90),
+    );
+  },
+  // Menacing low sting when the angry neighbour bursts in.
+  boss: () => {
+    [196, 175, 147, 175, 196].forEach((f, i) =>
+      setTimeout(() => blip(f, 0.18, "sawtooth", 0.1), i * 110),
+    );
+  },
 };

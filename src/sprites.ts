@@ -1,35 +1,62 @@
-// Procedural pixel art.
+// Procedural pixel art — now with animation.
 //
-// Each sprite is a small grid of characters. Every character maps to a colour
-// in `palette` ("." = transparent). We render the grid to an offscreen canvas
-// (one char = one pixel) and return a data URL that Kaplay can load as a sprite.
+// A sprite is one or more "frames". Each frame is a grid of characters; every
+// character maps to a colour in the palette ("." = transparent). Multi-frame
+// sprites are rendered side-by-side into one horizontal sheet so Kaplay can
+// slice and animate them (sliceX = frame count).
 //
-// This keeps every sprite as plain, editable text — tweak a grid, see the
-// change. Swap these out for real .png art later without touching game code.
+// All art lives here as plain text — tweak a grid, see the change. Swap for
+// real .png sheets later without touching game code.
 
 export type Palette = Record<string, string>;
+export type Anim = { from: number; to: number; loop: boolean; speed: number };
 
-export function makeSprite(grid: string[], palette: Palette): string {
-  const h = grid.length;
-  const w = Math.max(...grid.map((row) => row.length));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d")!;
-  for (let y = 0; y < h; y++) {
+export type SpriteDef = {
+  name: string;
+  data: string; // data URL
+  sliceX: number; // number of frames across
+  anims?: Record<string, Anim>;
+};
+
+function drawFrame(
+  ctx: CanvasRenderingContext2D,
+  grid: string[],
+  palette: Palette,
+  offsetX: number,
+) {
+  for (let y = 0; y < grid.length; y++) {
     const row = grid[y];
     for (let x = 0; x < row.length; x++) {
       const ch = row[x];
       const color = palette[ch];
       if (!color || ch === ".") continue;
       ctx.fillStyle = color;
-      ctx.fillRect(x, y, 1, 1);
+      ctx.fillRect(offsetX + x, y, 1, 1);
     }
   }
-  return canvas.toDataURL();
 }
 
-// --- Shared palette ---------------------------------------------------------
+// One frame.
+function makeSprite(grid: string[], palette: Palette): { data: string } {
+  return { data: makeSheet([grid], palette).data };
+}
+
+// Many frames laid out horizontally into a single sheet.
+function makeSheet(
+  frames: string[][],
+  palette: Palette,
+): { data: string; frameCount: number } {
+  const fh = frames[0].length;
+  const fw = Math.max(...frames.flatMap((f) => f.map((r) => r.length)));
+  const canvas = document.createElement("canvas");
+  canvas.width = fw * frames.length;
+  canvas.height = fh;
+  const ctx = canvas.getContext("2d")!;
+  frames.forEach((f, i) => drawFrame(ctx, f, palette, i * fw));
+  return { data: canvas.toDataURL(), frameCount: frames.length };
+}
+
+// --- Palette ----------------------------------------------------------------
 
 const PAL: Palette = {
   ".": "transparent",
@@ -44,17 +71,16 @@ const PAL: Palette = {
   B: "#1b4f9c", // dark blue
   s: "#8d99ae", // steel grey
   S: "#5c6675", // dark steel
-  n: "#8a5a2b", // brown (trunk)
+  n: "#8a5a2b", // brown (dog / trunk)
   N: "#6b4420", // dark brown
-  p: "#ff5d8f", // pink
-  c: "#48cae4", // cyan
+  c: "#48cae4", // cyan (exhaust / vent)
+  h: "#f1c27d", // skin
+  H: "#5a3a1a", // hair
 };
 
-// --- Sprite definitions -----------------------------------------------------
-// 16x16 unless noted. Designed to read at small size, scaled up crisply.
+// === Player (blue critter on a steel hover-mower) — 2-frame hover bob ========
 
-// The player: a little blue critter riding a steel hover-mower.
-const PLAYER = [
+const PLAYER_A = [
   "................",
   ".....kkkk.......",
   "....kbbbbk......",
@@ -72,9 +98,29 @@ const PLAYER = [
   "................",
   "................",
 ];
+// Frame B: exhaust puffs flicker beneath the wheels.
+const PLAYER_B = [
+  "................",
+  ".....kkkk.......",
+  "....kbbbbk......",
+  "...kbwbwbbk.....",
+  "...kbbbbbbk.....",
+  "...kbBBBBbk.....",
+  "....kbbbbk......",
+  "...kkBBBBkk.....",
+  "..ksSSSSSSsk....",
+  ".ksSSSSSSSSsk...",
+  ".ksScwcwcSSsk...",
+  ".kSSSSSSSSSSk...",
+  "..kkSkkkkSkk....",
+  "...kk....kk.....",
+  "...cc....cc.....",
+  "................",
+];
 
-// The rival neighbour's grumpy dog — chases the player.
-const DOG = [
+// === Dog — 2-frame run cycle (legs alternate) ===============================
+
+const DOG_BODY = [
   "................",
   "................",
   "...kk......kk...",
@@ -85,6 +131,9 @@ const DOG = [
   ".knnnnnnkknnnk..",
   ".knnnnnnnnnrnk..",
   "..knnnnnnnnnnk..",
+];
+const DOG_A = [
+  ...DOG_BODY,
   "..kNnk....kNnk..",
   "..kNNk....kNNk..",
   "...kk......kk...",
@@ -92,8 +141,57 @@ const DOG = [
   "................",
   "................",
 ];
+const DOG_B = [
+  ...DOG_BODY,
+  "..knnk....knnk..",
+  "..kNk......kNk..",
+  "..kk........kk..",
+  "................",
+  "................",
+  "................",
+];
 
-// A fuel can — pick up to refill the mower.
+// === Angry neighbour — 2-frame stomp (arms down / fists raised) =============
+
+const NEIGHBOR_A = [
+  "................",
+  ".....HHHH.......",
+  "....HHHHHH......",
+  "....HhhhhH......",
+  "....hkhhkh......",
+  "....hhwwhh......",
+  "....hhhhhh......",
+  "....hhkkhh......",
+  "...rrrrrrrr.....",
+  "..hrrrrrrrrh....",
+  "..hrrrrrrrrh....",
+  "...rrrrrrrr.....",
+  "...rr....rr.....",
+  "...BB....BB.....",
+  "...kk....kk.....",
+  "................",
+];
+const NEIGHBOR_B = [
+  "..h........h....",
+  "..h..HHHH..h....",
+  "....HHHHHH......",
+  "....HhhhhH......",
+  "....hkhhkh......",
+  "....hhwwhh......",
+  "....hhhhhh......",
+  "....hhkkhh......",
+  "...rrrrrrrr.....",
+  "...rrrrrrrr.....",
+  "...rrrrrrrr.....",
+  "...rrrrrrrr.....",
+  "...rr....rr.....",
+  "...BB....BB.....",
+  "...kk....kk.....",
+  "................",
+];
+
+// === Static props ===========================================================
+
 const FUEL = [
   "................",
   "................",
@@ -112,8 +210,6 @@ const FUEL = [
   "................",
   "................",
 ];
-
-// A tree obstacle (immovable).
 const TREE = [
   ".....gggg.......",
   "...ggGGGGgg.....",
@@ -132,55 +228,39 @@ const TREE = [
   "................",
   "................",
 ];
-
-// Tall (unmown) grass tile.
-const GRASS = [
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-  "gGgGgGgGgGgGgGgG",
-  "GgGgGgGgGgGgGgGg",
-];
-
-// Mown (cut) grass tile — lighter, striped like a fresh-cut lawn.
-const MOWN = [
-  "tTtTtTtTtTtTtTtT",
-  "tTtTtTtTtTtTtTtT",
-  "TtTtTtTtTtTtTtTt",
-  "TtTtTtTtTtTtTtTt",
-  "tTtTtTtTtTtTtTtT",
-  "tTtTtTtTtTtTtTtT",
-  "TtTtTtTtTtTtTtTt",
-  "TtTtTtTtTtTtTtTt",
-  "tTtTtTtTtTtTtTtT",
-  "tTtTtTtTtTtTtTtT",
-  "TtTtTtTtTtTtTtTt",
-  "TtTtTtTtTtTtTtTt",
-  "tTtTtTtTtTtTtTtT",
-  "tTtTtTtTtTtTtTtT",
-  "TtTtTtTtTtTtTtTt",
-  "TtTtTtTtTtTtTtTt",
-];
+const GRASS = Array.from({ length: 16 }, (_, r) =>
+  (r % 2 ? "GgGgGgGgGgGgGgGg" : "gGgGgGgGgGgGgGgG"),
+);
+const MOWN = Array.from({ length: 16 }, (_, r) =>
+  (r % 4 < 2 ? "tTtTtTtTtTtTtTtT" : "TtTtTtTtTtTtTtTt"),
+);
 
 const MOWN_PAL: Palette = { t: "#7ec46b", T: "#69b257" };
 const FUEL_PAL: Palette = { ...PAL, F: "#1b1b29" };
 
-export const SPRITES: { name: string; data: string }[] = [
-  { name: "player", data: makeSprite(PLAYER, PAL) },
-  { name: "dog", data: makeSprite(DOG, PAL) },
-  { name: "fuel", data: makeSprite(FUEL, FUEL_PAL) },
-  { name: "tree", data: makeSprite(TREE, PAL) },
-  { name: "grass", data: makeSprite(GRASS, PAL) },
-  { name: "mown", data: makeSprite(MOWN, MOWN_PAL) },
+// --- Export -----------------------------------------------------------------
+
+export const SPRITES: SpriteDef[] = [
+  {
+    name: "player",
+    ...makeSheet([PLAYER_A, PLAYER_B], PAL),
+    sliceX: 2,
+    anims: { hover: { from: 0, to: 1, loop: true, speed: 8 } },
+  },
+  {
+    name: "dog",
+    ...makeSheet([DOG_A, DOG_B], PAL),
+    sliceX: 2,
+    anims: { run: { from: 0, to: 1, loop: true, speed: 9 } },
+  },
+  {
+    name: "neighbor",
+    ...makeSheet([NEIGHBOR_A, NEIGHBOR_B], PAL),
+    sliceX: 2,
+    anims: { stomp: { from: 0, to: 1, loop: true, speed: 7 } },
+  },
+  { name: "fuel", ...makeSprite(FUEL, FUEL_PAL), sliceX: 1 },
+  { name: "tree", ...makeSprite(TREE, PAL), sliceX: 1 },
+  { name: "grass", ...makeSprite(GRASS, PAL), sliceX: 1 },
+  { name: "mown", ...makeSprite(MOWN, MOWN_PAL), sliceX: 1 },
 ];
