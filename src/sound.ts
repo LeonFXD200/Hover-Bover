@@ -60,4 +60,12 @@ export const sfx = {
       setTimeout(() => blip(f, 0.1, "square", 0.09), i * 90),
     );
   },
+  // Single warning beep — fired repeatedly (and faster) as fuel runs low.
+  alarm: () => blip(1046, 0.06, "square", 0.05),
+  // Rising whoosh as you launch yourself across the pitch.
+  launch: () => {
+    [262, 349, 466, 622, 831].forEach((f, i) =>
+      setTimeout(() => blip(f, 0.08, "sawtooth", 0.07), i * 45),
+    );
+  },
 };

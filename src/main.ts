@@ -19,6 +19,8 @@ const NEIGHBOR_SPEED = 58; // the boss: relentless but slower than the dog
 const FUEL_MAX = 100;
 const FUEL_BURN = 3.5; // per second
 const FUEL_PICKUP = 35;
+const FUEL_LOW = 25; // warning threshold
+const LAUNCH_SPEED = 520; // bail-out dash speed
 const START_LIVES = 3;
 const FUEL_SPAWN_EVERY = 6; // seconds
 
@@ -579,6 +581,15 @@ k.scene("game", (opts: GameOpts) => {
   let dogAwake = false;
   let invuln = 0;
 
+  // Player state machine: normal driving, stalled (out of fuel, aiming a
+  // bail-out), launching across the pitch, or crash-landing.
+  type Mode = "drive" | "stall" | "launch" | "crash";
+  let mode: Mode = "drive";
+  let aim = k.vec2(1, 0); // last heading — seeds the bail-out direction
+  let launchDir = k.vec2(1, 0);
+  let launchDist = 0;
+  let alarmT = 0;
+
   // --- Build the lawn -------------------------------------------------------
   const grass: any[][] = [];
   const mown: boolean[][] = [];
@@ -655,24 +666,9 @@ k.scene("game", (opts: GameOpts) => {
     }
   };
 
-  k.onUpdate(() => {
-    let dx = 0;
-    let dy = 0;
-    if (k.isKeyDown("left") || k.isKeyDown("a")) dx -= 1;
-    if (k.isKeyDown("right") || k.isKeyDown("d")) dx += 1;
-    if (k.isKeyDown("up") || k.isKeyDown("w")) dy -= 1;
-    if (k.isKeyDown("down") || k.isKeyDown("s")) dy += 1;
-    if (dx !== 0 || dy !== 0) {
-      const len = Math.hypot(dx, dy);
-      tryMove(
-        (dx / len) * PLAYER_SPEED * k.dt(),
-        (dy / len) * PLAYER_SPEED * k.dt(),
-      );
-      player.flipX = dx < 0;
-    }
-
-    // Mow the tile under the mower.
-    const t = tileAt(player.pos.x, player.pos.y);
+  // Mow the tile at a world point; returns true if it was unmown grass.
+  const mowAt = (x: number, y: number): boolean => {
+    const t = tileAt(x, y);
     if (inBounds(t.c, t.r) && !mown[t.r][t.c]) {
       mown[t.r][t.c] = true;
       k.destroy(grass[t.r][t.c]);
@@ -684,20 +680,144 @@ k.scene("game", (opts: GameOpts) => {
       ]);
       score += 10;
       toMow--;
-      sfx.mow();
-      if (toMow <= 0) winLevel();
+      return true;
+    }
+    return false;
+  };
+
+  const grabFuel = (can: any) => {
+    fuel = Math.min(FUEL_MAX, fuel + FUEL_PICKUP);
+    sfx.fuel();
+    k.destroy(can);
+    if (mode === "stall") {
+      mode = "drive"; // a can landed on you mid-stall — saved!
+      invuln = 1.5;
+    }
+  };
+
+  const startLaunch = () => {
+    if (mode !== "stall") return;
+    mode = "launch";
+    launchDir = aim.len() > 0 ? aim.unit() : k.vec2(1, 0);
+    launchDist = 0;
+    invuln = 99; // immune while rocketing through trees
+    sfx.launch();
+  };
+
+  const endLaunch = (survived: boolean) => {
+    if (survived) {
+      mode = "drive";
+      invuln = 1.5; // grace flash so you aren't instantly caught on landing
+    } else {
+      mode = "crash";
+      invuln = 1.5;
+      k.wait(1.0, () => {
+        sfx.lose();
+        k.go("lose", {
+          score,
+          reason: "Out of fuel — you didn't reach a can in time!",
+        });
+      });
+    }
+  };
+
+  const readDir = () => {
+    let dx = 0;
+    let dy = 0;
+    if (k.isKeyDown("left") || k.isKeyDown("a")) dx -= 1;
+    if (k.isKeyDown("right") || k.isKeyDown("d")) dx += 1;
+    if (k.isKeyDown("up") || k.isKeyDown("w")) dy -= 1;
+    if (k.isKeyDown("down") || k.isKeyDown("s")) dy += 1;
+    return { dx, dy };
+  };
+
+  k.onKeyPress("space", startLaunch);
+
+  k.onUpdate(() => {
+    // Low-fuel alarm — beeps faster the closer you are to empty.
+    if (mode === "drive" && fuel > 0 && fuel < FUEL_LOW) {
+      alarmT -= k.dt();
+      if (alarmT <= 0) {
+        sfx.alarm();
+        alarmT = 0.12 + (fuel / FUEL_LOW) * 0.5;
+      }
+    } else if (mode === "stall") {
+      alarmT -= k.dt();
+      if (alarmT <= 0) {
+        sfx.alarm();
+        alarmT = 0.2;
+      }
     }
 
-    // Burn fuel.
-    fuel -= FUEL_BURN * k.dt();
-    if (fuel <= 0) {
-      fuel = 0;
-      sfx.lose();
-      k.go("lose", { score, reason: "The mower spluttered out of fuel!" });
+    if (mode === "drive") {
+      const { dx, dy } = readDir();
+      if (dx !== 0 || dy !== 0) {
+        const len = Math.hypot(dx, dy);
+        tryMove(
+          (dx / len) * PLAYER_SPEED * k.dt(),
+          (dy / len) * PLAYER_SPEED * k.dt(),
+        );
+        player.flipX = dx < 0;
+        aim = k.vec2(dx / len, dy / len);
+      }
+      if (mowAt(player.pos.x, player.pos.y)) {
+        sfx.mow();
+        if (toMow <= 0) {
+          winLevel();
+          return;
+        }
+      }
+      fuel -= FUEL_BURN * k.dt();
+      if (fuel <= 0) {
+        fuel = 0;
+        mode = "stall"; // out of fuel — line up a bail-out
+        alarmT = 0;
+      }
+    } else if (mode === "stall") {
+      const { dx, dy } = readDir();
+      if (dx !== 0 || dy !== 0) {
+        const len = Math.hypot(dx, dy);
+        aim = k.vec2(dx / len, dy / len);
+        player.flipX = dx < 0;
+      }
+    } else if (mode === "launch") {
+      const prev = player.pos.clone();
+      const step = launchDir.scale(LAUNCH_SPEED * k.dt());
+      const half = 10;
+      const nx = player.pos.x + step.x;
+      const ny = player.pos.y + step.y;
+      const cx = k.clamp(nx, half, GAME_W - half);
+      const cy = k.clamp(ny, HUD_H + half, GAME_H - half);
+      const hitWall = cx !== nx || cy !== ny;
+      player.pos.x = cx;
+      player.pos.y = cy;
+      player.flipX = launchDir.x < 0;
+
+      // Mow a stripe along the flight path (sample so we don't skip tiles).
+      const segs = Math.max(1, Math.ceil(prev.dist(player.pos) / 12));
+      for (let i = 1; i <= segs; i++) {
+        const sx = prev.x + ((player.pos.x - prev.x) * i) / segs;
+        const sy = prev.y + ((player.pos.y - prev.y) * i) / segs;
+        if (mowAt(sx, sy) && toMow <= 0) {
+          winLevel();
+          return;
+        }
+      }
+      // Grab any fuel can we fly over.
+      for (const can of k.get("fuel")) {
+        if (player.pos.dist(can.pos) < 24) grabFuel(can);
+      }
+
+      launchDist += step.len();
+      if (fuel > 0) endLaunch(true);
+      else if (hitWall || launchDist > 800) endLaunch(false);
     }
 
-    if (invuln > 0) {
-      invuln -= k.dt();
+    // Flashing: urgent while stalled/crashing, grace flash while invulnerable.
+    if (mode === "stall" || mode === "crash") {
+      player.opacity = Math.floor(k.time() * 12) % 2 ? 0.35 : 1;
+    } else if (invuln > 0) {
+      if (mode !== "launch") invuln -= k.dt();
       player.opacity = Math.floor(k.time() * 10) % 2 ? 0.4 : 1;
     } else {
       player.opacity = 1;
@@ -706,7 +826,7 @@ k.scene("game", (opts: GameOpts) => {
 
   // --- Enemies --------------------------------------------------------------
   const loseLife = (reason: string, resetPos: () => void) => {
-    if (invuln > 0) return;
+    if (invuln > 0 || mode !== "drive") return;
     lives--;
     sfx.hit();
     k.shake(8);
@@ -804,11 +924,7 @@ k.scene("game", (opts: GameOpts) => {
   };
   k.loop(FUEL_SPAWN_EVERY, spawnFuel);
   k.wait(1.5, spawnFuel);
-  player.onCollide("fuel", (can: any) => {
-    fuel = Math.min(FUEL_MAX, fuel + FUEL_PICKUP);
-    sfx.fuel();
-    k.destroy(can);
-  });
+  player.onCollide("fuel", (can: any) => grabFuel(can));
 
   // --- HUD ------------------------------------------------------------------
   k.add([k.rect(GAME_W, HUD_H), k.color(20, 30, 48), k.pos(0, 0), k.z(20)]);
@@ -853,7 +969,36 @@ k.scene("game", (opts: GameOpts) => {
     const pct = Math.round(((totalToMow - toMow) / totalToMow) * 100);
     mownLabel.text = `MOWN ${pct}%`;
     fuelBar.width = (fuel / FUEL_MAX) * FB_W;
-    fuelBar.color = fuel < 25 ? k.rgb(...C.red) : k.rgb(...C.green);
+    fuelBar.color = fuel < FUEL_LOW ? k.rgb(...C.red) : k.rgb(...C.green);
+  });
+
+  // --- Bail-out aim UI (registered last, so it draws over night darkness) ---
+  k.onDraw(() => {
+    if (mode !== "stall") return;
+    const tip = player.pos.add(aim.scale(48));
+    k.drawLine({ p1: player.pos, p2: tip, width: 4, color: k.rgb(...C.yellow) });
+    const back = aim.scale(-14);
+    const perp = k.vec2(-aim.y, aim.x).scale(9);
+    k.drawTriangle({
+      p1: tip,
+      p2: tip.add(back).add(perp),
+      p3: tip.add(back).sub(perp),
+      color: k.rgb(...C.yellow),
+    });
+    k.drawText({
+      text: "OUT OF FUEL!",
+      pos: k.vec2(GAME_W / 2, HUD_H + 18),
+      size: 16,
+      anchor: "center",
+      color: Math.floor(k.time() * 4) % 2 ? k.rgb(...C.red) : k.rgb(...C.white),
+    });
+    k.drawText({
+      text: "aim with the keys  -  SPACE to launch!",
+      pos: k.vec2(GAME_W / 2, HUD_H + 38),
+      size: 11,
+      anchor: "center",
+      color: k.rgb(...C.white),
+    });
   });
 });
 
