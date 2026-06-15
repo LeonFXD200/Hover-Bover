@@ -89,53 +89,133 @@ const C = {
 const bgFill = () =>
   k.add([k.rect(GAME_W, GAME_H), k.color(...C.bg), k.pos(0, 0)]);
 
+// --- Tiny software 3D renderer ----------------------------------------------
+// A slowly rotating "lawn block" (grass-topped soil cube). It's drawn at the
+// game's low internal resolution and the page upscales it with pixelated CSS,
+// so a genuine 3D shape comes out chunky and pixel-art-like — a 3D pixel intro.
+
+type V3 = [number, number, number];
+
+const CUBE_VERTS: V3[] = [
+  [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+  [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+];
+// Each face: vertex indices (as a quad) + a base colour. y is down on screen,
+// so the grass "top" is the y = -1 face.
+const CUBE_FACES: { v: number[]; c: V3 }[] = [
+  { v: [0, 1, 5, 4], c: [86, 196, 105] }, // top — grass
+  { v: [3, 2, 6, 7], c: [58, 40, 24] }, // bottom — dark soil
+  { v: [0, 1, 2, 3], c: [120, 78, 44] }, // soil sides
+  { v: [5, 4, 7, 6], c: [120, 78, 44] },
+  { v: [4, 0, 3, 7], c: [101, 66, 38] },
+  { v: [1, 5, 6, 2], c: [101, 66, 38] },
+];
+
+const v3sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const v3cross = (a: V3, b: V3): V3 => [
+  a[1] * b[2] - a[2] * b[1],
+  a[2] * b[0] - a[0] * b[2],
+  a[0] * b[1] - a[1] * b[0],
+];
+const v3norm = (a: V3): V3 => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+const LIGHT = v3norm([-0.4, -0.8, -0.55]);
+
+function rotXY(p: V3, ax: number, ay: number): V3 {
+  const cy = Math.cos(ay);
+  const sy = Math.sin(ay);
+  const x = p[0] * cy - p[2] * sy;
+  const z1 = p[0] * sy + p[2] * cy;
+  const cx = Math.cos(ax);
+  const sx = Math.sin(ax);
+  const y = p[1] * cx - z1 * sx;
+  const z = p[1] * sx + z1 * cx;
+  return [x, y, z];
+}
+
+// Draw the rotating block centred at (cx, cy). Call inside an onDraw().
+function drawSpinningBlock(cx: number, cy: number, size: number, t: number) {
+  const ay = t * 0.5; // gentle spin
+  const ax = 0.55 + Math.sin(t * 0.35) * 0.22; // slight tilt wobble
+  const rv = CUBE_VERTS.map((p) => rotXY(p, ax, ay));
+  const F = 4.2; // perspective focal distance
+  const proj = rv.map((p) => {
+    const s = F / (F + p[2]);
+    return k.vec2(cx + p[0] * s * size, cy + p[1] * s * size);
+  });
+  // Painter's algorithm: draw far faces first, flat-shaded by a fixed light.
+  const faces = CUBE_FACES.map((f) => {
+    const n = v3norm(
+      v3cross(v3sub(rv[f.v[1]], rv[f.v[0]]), v3sub(rv[f.v[2]], rv[f.v[0]])),
+    );
+    const lit = Math.max(0, n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]);
+    const br = 0.45 + 0.55 * lit;
+    const avgz =
+      (rv[f.v[0]][2] + rv[f.v[1]][2] + rv[f.v[2]][2] + rv[f.v[3]][2]) / 4;
+    return { f, br, avgz };
+  }).sort((p, q) => q.avgz - p.avgz);
+  for (const { f, br } of faces) {
+    k.drawPolygon({
+      pts: f.v.map((i) => proj[i]),
+      color: k.rgb(f.c[0] * br, f.c[1] * br, f.c[2] * br),
+      outline: { width: 1, color: k.rgb(18, 22, 32) },
+    });
+  }
+}
+
 // ============================================================================
-// LOADING — animated boot screen
+// LOADING — animated boot screen with a 3D pixel block
 // ============================================================================
 
 k.scene("loading", () => {
   bgFill();
 
   k.add([
-    k.text("HOVER BOVER", { size: 38 }),
+    k.text("HOVER BOVER", { size: 36 }),
     k.anchor("center"),
-    k.pos(GAME_W / 2, GAME_H / 2 - 70),
+    k.pos(GAME_W / 2, 54),
     k.color(...C.green),
   ]);
-
-  // A little mower that bobs while it "loads".
-  const baseY = GAME_H / 2;
-  const mower = k.add([
-    k.sprite("player", { anim: "hover" }),
+  k.add([
+    k.text("a hover-mowing caper", { size: 13 }),
     k.anchor("center"),
-    k.pos(GAME_W / 2, baseY),
-    k.scale(3),
+    k.pos(GAME_W / 2, 84),
+    k.color(...C.grey),
   ]);
-  mower.onUpdate(() => {
-    mower.pos.y = baseY + Math.sin(k.time() * 6) * 6;
-  });
+
+  // The rotating 3D pixel lawn block.
+  k.onDraw(() => drawSpinningBlock(GAME_W / 2, 200, 58, k.time()));
 
   const dots = k.add([
     k.text("LOADING", { size: 14 }),
     k.anchor("center"),
-    k.pos(GAME_W / 2, GAME_H / 2 + 60),
+    k.pos(GAME_W / 2, 300),
     k.color(...C.grey),
   ]);
 
-  // Progress bar.
   const BW = 220;
   const BX = (GAME_W - BW) / 2;
-  const BY = GAME_H / 2 + 85;
+  const BY = 322;
   k.add([k.rect(BW + 4, 14), k.color(40, 40, 50), k.pos(BX - 2, BY - 2)]);
   const bar = k.add([k.rect(0, 10), k.color(...C.green), k.pos(BX, BY)]);
 
+  k.add([
+    k.text("press SPACE to skip", { size: 11 }),
+    k.anchor("center"),
+    k.pos(GAME_W / 2, GAME_H - 18),
+    k.color(...C.grey),
+  ]);
+
   let p = 0;
   k.onUpdate(() => {
-    p = Math.min(1, p + k.dt() / 1.8);
+    p = Math.min(1, p + k.dt() / 2.6);
     bar.width = p * BW;
     dots.text = "LOADING" + ".".repeat(1 + (Math.floor(k.time() * 3) % 3));
     if (p >= 1) k.go("story");
   });
+  k.onKeyPress("space", () => k.go("story"));
 });
 
 // ============================================================================
