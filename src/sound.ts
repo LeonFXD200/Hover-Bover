@@ -54,4 +54,10 @@ export const sfx = {
       setTimeout(() => blip(f, 0.18, "sawtooth", 0.1), i * 110),
     );
   },
+  // Sharp alarm when the torch catches you at night.
+  spot: () => {
+    [880, 988].forEach((f, i) =>
+      setTimeout(() => blip(f, 0.1, "square", 0.09), i * 90),
+    );
+  },
 };

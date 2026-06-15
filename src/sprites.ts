@@ -236,7 +236,12 @@ const MOWN = Array.from({ length: 16 }, (_, r) =>
 );
 
 const MOWN_PAL: Palette = { t: "#7ec46b", T: "#69b257" };
+// Player 2's freshly-cut stripes — pink, to match the P2 mower.
+const MOWN2_PAL: Palette = { t: "#f4a6c8", T: "#e58cb4" };
 const FUEL_PAL: Palette = { ...PAL, F: "#1b1b29" };
+
+// Player 2 reuses the mower art with the blue swapped for pink.
+const PAL2: Palette = { ...PAL, b: "#ff5d8f", B: "#c9356b" };
 
 // --- Export -----------------------------------------------------------------
 
@@ -244,6 +249,12 @@ export const SPRITES: SpriteDef[] = [
   {
     name: "player",
     ...makeSheet([PLAYER_A, PLAYER_B], PAL),
+    sliceX: 2,
+    anims: { hover: { from: 0, to: 1, loop: true, speed: 8 } },
+  },
+  {
+    name: "player2",
+    ...makeSheet([PLAYER_A, PLAYER_B], PAL2),
     sliceX: 2,
     anims: { hover: { from: 0, to: 1, loop: true, speed: 8 } },
   },
@@ -263,4 +274,5 @@ export const SPRITES: SpriteDef[] = [
   { name: "tree", ...makeSprite(TREE, PAL), sliceX: 1 },
   { name: "grass", ...makeSprite(GRASS, PAL), sliceX: 1 },
   { name: "mown", ...makeSprite(MOWN, MOWN_PAL), sliceX: 1 },
+  { name: "mown2", ...makeSprite(MOWN, MOWN2_PAL), sliceX: 1 },
 ];
