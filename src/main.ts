@@ -1109,11 +1109,13 @@ k.scene("twoplayer", (opts: { coop: boolean }) => {
     left: ["a"],
     right: ["d"],
   }, 1);
+  // P2 can use the arrow keys OR IJKL (handy on 60% keyboards where the
+  // arrows need an Fn chord).
   const p2 = mkPlayer("player2", GAME_W - TILE * 0.5, GAME_H - TILE * 0.5, {
-    up: ["up"],
-    down: ["down"],
-    left: ["left"],
-    right: ["right"],
+    up: ["up", "i"],
+    down: ["down", "k"],
+    left: ["left", "j"],
+    right: ["right", "l"],
   }, 2);
   const players = [p1, p2];
 
@@ -1258,7 +1260,7 @@ k.scene("twoplayer", (opts: { coop: boolean }) => {
   });
 
   k.add([
-    k.text("P1: WASD     P2: arrows", { size: 11 }),
+    k.text("P1: WASD     P2: arrows or IJKL", { size: 11 }),
     k.anchor("bot"),
     k.pos(GAME_W / 2, GAME_H - 4),
     k.color(...C.grey),
