@@ -1,4 +1,5 @@
 import kaplay from "kaplay";
+import { mobileControls } from "./mobileControls";
 import { SPRITES } from "./sprites";
 import { sfx } from "./sound";
 
@@ -21,29 +22,61 @@ const FUEL_BURN = 3.5; // per second
 const FUEL_PICKUP = 35;
 const FUEL_LOW = 25; // warning threshold
 const LAUNCH_SPEED = 520; // bail-out dash speed
+const AIM_CURSOR_SPEED = 155; // precise target movement while lining up launch
 const START_LIVES = 3;
 const FUEL_SPAWN_EVERY = 6; // seconds
+const SCORE_DROP_VALUE = 10;
+const SCORE_DROP_MAX = 6;
+const SCORE_DROP_LIFETIME = 20;
+const LASER_WARN = 0.9;
+const LASER_FIRE = 0.42;
+const LASER_PAUSE_MIN = 0.85;
+const LASER_PAUSE_MAX = 1.4;
+const FLOWER_SLOW = 0.55;
+const WET_SLIDE_TIME = 1.05;
+const WET_SLIDE_SPEED = 155;
+const WET_SLIDE_STEER = 62;
+const WET_SLIDE_DRAG = 1.25;
+const WET_TAP_RECOVER = 0.18;
+const WET_TAP_BRAKE = 0.88;
+const COMBO_WINDOW = 1.65;
+const COMBO_STEP = 4;
+const COMBO_MAX = 6;
+const COMBO_FUEL_BONUS = 6; // each multiplier step tops up a little fuel
+const LASER_BATTERY = 30; // drone powers down after this many seconds (escape valve)
 
 // Per-level setup: tree layout, how fast the dog wakes up, and which threats
-// are active. Level 3 is a night stealth level: no dog, but the neighbour
-// carries a torch and only spots you when you're in her beam with clear sight.
+// are active. Level 1 is a fenced starter garden; later nights add torch
+// stealth and then full-lawn laser sweeps.
+type PlayArea = { c0: number; r0: number; cols: number; rows: number };
+type HazardCfg = {
+  flowerbeds?: [number, number][];
+  wet?: [number, number][];
+};
 type LevelCfg = {
   trees: [number, number][];
   dogDelay: number;
   hasNeighbor: boolean;
   hasDog: boolean;
+  playArea?: PlayArea;
+  hazards?: HazardCfg;
   night?: boolean;
+  hasLaserDrone?: boolean;
 };
+const FULL_PLAY_AREA: PlayArea = { c0: 0, r0: 0, cols: COLS, rows: ROWS };
 const LEVELS: Record<number, LevelCfg> = {
   1: {
+    playArea: { c0: 3, r0: 2, cols: 9, rows: 6 },
     trees: [
-      [4, 2],
-      [9, 3],
-      [6, 6],
-      [11, 8],
-      [2, 8],
+      [5, 3],
+      [9, 5],
+      [4, 6],
     ],
-    dogDelay: 3,
+    hazards: {
+      flowerbeds: [[8, 6]],
+      wet: [[10, 3], [6, 7]],
+    },
+    dogDelay: 5,
     hasNeighbor: false,
     hasDog: true,
   },
@@ -58,6 +91,10 @@ const LEVELS: Record<number, LevelCfg> = {
       [7, 8],
       [12, 8],
     ],
+    hazards: {
+      flowerbeds: [[5, 1], [9, 7], [13, 5]],
+      wet: [[3, 4], [8, 4], [11, 9], [1, 7]],
+    },
     dogDelay: 1.5,
     hasNeighbor: true,
     hasDog: true,
@@ -81,10 +118,37 @@ const LEVELS: Record<number, LevelCfg> = {
       [8, 6],
       [0, 9],
     ],
+    hazards: {
+      flowerbeds: [[4, 4], [11, 6], [1, 8]],
+      wet: [[6, 3], [8, 8], [12, 2], [3, 9]],
+    },
     dogDelay: 0,
     hasNeighbor: true,
     hasDog: false,
     night: true,
+  },
+  4: {
+    trees: [
+      [2, 1],
+      [6, 2],
+      [10, 1],
+      [13, 3],
+      [4, 5],
+      [8, 6],
+      [12, 7],
+      [2, 9],
+      [6, 9],
+      [10, 9],
+    ],
+    hazards: {
+      flowerbeds: [[5, 4], [13, 8], [1, 6]],
+      wet: [[3, 3], [7, 5], [11, 5], [5, 8], [9, 2], [14, 6]],
+    },
+    dogDelay: 0,
+    hasNeighbor: false,
+    hasDog: false,
+    night: true,
+    hasLaserDrone: true,
   },
 };
 
@@ -98,10 +162,36 @@ const k = kaplay({
   crisp: true,
   pixelDensity: 1,
 });
+mobileControls.setup();
 
 for (const s of SPRITES) {
   k.loadSprite(s.name, s.data, { sliceX: s.sliceX, anims: s.anims ?? {} });
 }
+
+const areaRect = (area: PlayArea) => ({
+  left: area.c0 * TILE,
+  top: HUD_H + area.r0 * TILE,
+  right: (area.c0 + area.cols) * TILE,
+  bottom: HUD_H + (area.r0 + area.rows) * TILE,
+});
+const inPlayArea = (area: PlayArea, c: number, r: number) =>
+  c >= area.c0 &&
+  c < area.c0 + area.cols &&
+  r >= area.r0 &&
+  r < area.r0 + area.rows;
+const tileCenter = (c: number, r: number) =>
+  k.vec2(c * TILE + TILE / 2, HUD_H + r * TILE + TILE / 2);
+const clampPointToArea = (
+  area: PlayArea,
+  p: { x: number; y: number },
+  margin = 0,
+) => {
+  const rect = areaRect(area);
+  return k.vec2(
+    k.clamp(p.x, rect.left + margin, rect.right - margin),
+    k.clamp(p.y, rect.top + margin, rect.bottom - margin),
+  );
+};
 
 const tileAt = (x: number, y: number) => ({
   c: Math.floor(x / TILE),
@@ -129,6 +219,36 @@ const C = {
 
 const bgFill = () =>
   k.add([k.rect(GAME_W, GAME_H), k.color(...C.bg), k.pos(0, 0)]);
+
+// --- Persistent high score --------------------------------------------------
+
+const HISCORE_KEY = "hoverbover.hiscore";
+const getHiScore = (): number => {
+  try {
+    return parseInt(localStorage.getItem(HISCORE_KEY) ?? "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+};
+const recordScore = (score: number): number => {
+  const best = Math.max(getHiScore(), score);
+  try {
+    localStorage.setItem(HISCORE_KEY, String(best));
+  } catch {
+    /* storage unavailable (private mode) — just don't persist */
+  }
+  return best;
+};
+
+// --- Haptics (mobile only; no-op where unsupported) -------------------------
+
+const haptic = (ms: number | number[]) => {
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    /* not supported */
+  }
+};
 
 // --- Tiny software 3D renderer ----------------------------------------------
 // A slowly rotating "lawn block" (grass-topped soil cube). It's drawn at the
@@ -212,6 +332,7 @@ function drawSpinningBlock(cx: number, cy: number, size: number, t: number) {
 
 k.scene("loading", () => {
   bgFill();
+  mobileControls.setAction(() => k.go("menu"), "SKIP");
 
   k.add([
     k.text("HOVER BOVER", { size: 36 }),
@@ -243,7 +364,7 @@ k.scene("loading", () => {
   const bar = k.add([k.rect(0, 10), k.color(...C.green), k.pos(BX, BY)]);
 
   k.add([
-    k.text("press SPACE to skip", { size: 11 }),
+    k.text("press SPACE or GO to skip", { size: 11 }),
     k.anchor("center"),
     k.pos(GAME_W / 2, GAME_H - 18),
     k.color(...C.grey),
@@ -276,6 +397,16 @@ k.scene("menu", () => {
     k.color(...C.green),
   ]);
 
+  const best = getHiScore();
+  if (best > 0) {
+    k.add([
+      k.text(`BEST  ${best}`, { size: 14 }),
+      k.anchor("center"),
+      k.pos(GAME_W / 2, 104),
+      k.color(...C.yellow),
+    ]);
+  }
+
   const items: MenuItem[] = [
     { label: "1 PLAYER  -  Story", go: () => k.go("story") },
     {
@@ -305,17 +436,42 @@ k.scene("menu", () => {
   refresh();
 
   k.add([
-    k.text("up / down to choose   -   SPACE to play", { size: 12 }),
+    k.text("up / down to choose   -   SPACE or GO to play", { size: 12 }),
     k.anchor("center"),
     k.pos(GAME_W / 2, GAME_H - 28),
     k.color(...C.grey),
   ]);
 
+  let mobileMenuT = 0;
   const moveSel = (d: number) => {
     sel = (sel + d + items.length) % items.length;
     sfx.mow();
     refresh();
   };
+  mobileControls.setAction(() => items[sel].go(), "PLAY");
+
+  k.onUpdate(() => {
+    mobileMenuT = Math.max(0, mobileMenuT - k.dt());
+    const mobile = mobileControls.direction();
+    if (
+      mobileMenuT <= 0 &&
+      Math.abs(mobile.y) > 0.55 &&
+      Math.abs(mobile.y) >= Math.abs(mobile.x)
+    ) {
+      moveSel(mobile.y > 0 ? 1 : -1);
+      mobileMenuT = 0.24;
+    }
+  });
+
+  k.onClick(() => {
+    const p = k.mousePos();
+    const idx = items.findIndex((_, i) => Math.abs(p.y - (150 + i * 42)) < 20);
+    if (idx < 0) return;
+    sel = idx;
+    refresh();
+    items[sel].go();
+  });
+
   k.onKeyPress("up", () => moveSel(-1));
   k.onKeyPress("down", () => moveSel(1));
   k.onKeyPress("w", () => moveSel(-1));
@@ -410,9 +566,11 @@ k.scene("story", () => {
     "won Best Lawn on the street.\n\n" +
     "This morning she left her prized\n" +
     "HOVER-MOWER out on the drive.\n\n" +
-    "You 'borrowed' it. Mow every lawn and slip\n" +
-    "it back before she notices...\n\n" +
-    "...but her dog already smells trouble.";
+    "You 'borrowed' it. Start with the little\n" +
+    "side garden, then mow every lawn and slip\n" +
+    "it back before she notices.\n\n" +
+    "If trouble clips you, grab your scattered\n" +
+    "points before the night gets worse.";
 
   const txt = k.add([
     k.text("", { size: 14, align: "center", lineSpacing: 6 }),
@@ -422,7 +580,7 @@ k.scene("story", () => {
   ]);
 
   const hint = k.add([
-    k.text("press SPACE to start mowing", { size: 13 }),
+    k.text("press SPACE or GO to start mowing", { size: 13 }),
     k.anchor("center"),
     k.pos(GAME_W / 2, GAME_H - 28),
     k.color(...C.green),
@@ -447,6 +605,7 @@ k.scene("story", () => {
       k.go("game", { level: 1, score: 0, lives: START_LIVES });
     }
   };
+  mobileControls.setAction(advance, "GO");
   k.onKeyPress("space", advance);
   k.onClick(advance);
 });
@@ -566,6 +725,219 @@ function setupNightBoss(
   return { isHunting: () => hunting };
 }
 
+// --- Second-night enemy: a drone that sweeps full rows / columns with lasers -
+
+type LaserAxis = "row" | "col";
+type LaserPulse = {
+  axis: LaserAxis;
+  index: number;
+  phase: "warn" | "fire";
+  t: number;
+};
+
+function setupLaserDrone(
+  drone: any,
+  player: any,
+  playArea: PlayArea,
+  hitPlayer: (reason: string, resetPos: () => void) => boolean,
+) {
+  const rect = areaRect(playArea);
+  let cooldown = 1.0;
+  let pulse: LaserPulse | null = null;
+  // Battery is a level-long timer (NOT reset on death): once it runs out the
+  // drone powers down and stops firing, giving a guaranteed window to finish
+  // the lawn. It's the escape valve that keeps the final night winnable.
+  let battery = LASER_BATTERY;
+  let offline = false;
+
+  const resetDrone = () => {
+    pulse = null;
+    cooldown = 1.2;
+    drone.pos = k.vec2((rect.left + rect.right) / 2, rect.top + 18);
+  };
+
+  const choosePulse = () => {
+    const axis: LaserAxis = Math.random() < 0.55 ? "row" : "col";
+    pulse = {
+      axis,
+      index: axis === "row" ? k.randi(0, playArea.rows) : k.randi(0, playArea.cols),
+      phase: "warn",
+      t: LASER_WARN,
+    };
+    sfx.laserWarn();
+  };
+
+  const pulseBounds = (p: LaserPulse) => {
+    if (p.axis === "row") {
+      return {
+        x: rect.left,
+        y: rect.top + p.index * TILE,
+        w: rect.right - rect.left,
+        h: TILE,
+      };
+    }
+    return {
+      x: rect.left + p.index * TILE,
+      y: rect.top,
+      w: TILE,
+      h: rect.bottom - rect.top,
+    };
+  };
+
+  const pulseCenter = (p: LaserPulse) => {
+    const b = pulseBounds(p);
+    return p.axis === "row"
+      ? k.vec2(rect.right - 20, b.y + b.h / 2)
+      : k.vec2(b.x + b.w / 2, rect.top + 20);
+  };
+
+  const playerInPulse = (p: LaserPulse) => {
+    const b = pulseBounds(p);
+    return (
+      player.pos.x >= b.x &&
+      player.pos.x <= b.x + b.w &&
+      player.pos.y >= b.y &&
+      player.pos.y <= b.y + b.h
+    );
+  };
+
+  drone.onUpdate(() => {
+    if (!offline) {
+      battery = Math.max(0, battery - k.dt());
+      if (battery <= 0) {
+        offline = true;
+        pulse = null; // cancel any sweep in progress
+        sfx.boss();
+      }
+    }
+
+    if (offline) {
+      // Powered down — drift up to a corner and hum, no more lasers.
+      const rest = k.vec2(rect.left + 24, rect.top + 14 + Math.sin(k.time() * 2) * 3);
+      drone.pos = drone.pos.add(rest.sub(drone.pos).scale(Math.min(1, k.dt() * 2)));
+      drone.angle = Math.sin(k.time() * 6) * 8;
+      return;
+    }
+
+    const idle = k.vec2(
+      (rect.left + rect.right) / 2 + Math.sin(k.time() * 1.2) * 70,
+      rect.top + 18 + Math.sin(k.time() * 2.1) * 4,
+    );
+    const target = pulse ? pulseCenter(pulse) : idle;
+    const toTarget = target.sub(drone.pos);
+    if (toTarget.len() > 1) {
+      drone.pos = drone.pos.add(toTarget.scale(Math.min(1, k.dt() * 4.5)));
+      drone.flipX = toTarget.x < 0;
+    }
+
+    if (!pulse) {
+      cooldown -= k.dt();
+      if (cooldown <= 0) choosePulse();
+      return;
+    }
+
+    pulse.t -= k.dt();
+    if (pulse.phase === "warn" && pulse.t <= 0) {
+      pulse.phase = "fire";
+      pulse.t = LASER_FIRE;
+      sfx.laserFire();
+      haptic(45);
+      k.shake(3);
+    } else if (pulse.phase === "fire") {
+      if (playerInPulse(pulse)) {
+        const hit = hitPlayer("The drone's lawn laser swept you up!", resetDrone);
+        if (hit) return;
+      }
+      if (pulse.t <= 0) {
+        pulse = null;
+        cooldown = LASER_PAUSE_MIN + Math.random() * (LASER_PAUSE_MAX - LASER_PAUSE_MIN);
+      }
+    }
+  });
+
+  k.onDraw(() => {
+    // Night lifts a little once the drone is dead.
+    k.drawSubtracted(
+      () =>
+        k.drawRect({
+          pos: k.vec2(0, HUD_H),
+          width: GAME_W,
+          height: GAME_H - HUD_H,
+          color: k.rgb(3, 4, 12),
+          opacity: offline ? 0.55 : 0.9,
+        }),
+      () => {
+        k.drawCircle({
+          pos: player.pos,
+          radius: offline ? 90 : 62,
+          color: k.rgb(255, 255, 255),
+        });
+        if (!offline) {
+          k.drawCircle({ pos: drone.pos, radius: 36, color: k.rgb(255, 255, 255) });
+        }
+      },
+    );
+
+    // Battery gauge under the HUD.
+    const BAT_W = 120;
+    const bx = GAME_W / 2 - BAT_W / 2;
+    const frac = battery / LASER_BATTERY;
+    k.drawRect({
+      pos: k.vec2(bx - 2, HUD_H + 6),
+      width: BAT_W + 4,
+      height: 8,
+      color: k.rgb(8, 14, 24),
+      opacity: 0.85,
+      outline: { width: 1, color: k.rgb(...C.grey) },
+    });
+    k.drawRect({
+      pos: k.vec2(bx, HUD_H + 7),
+      width: Math.max(0, frac * BAT_W),
+      height: 6,
+      color: frac < 0.25 ? k.rgb(...C.red) : k.rgb(72, 202, 228),
+    });
+    k.drawText({
+      text: offline ? "DRONE OFFLINE" : "DRONE BATTERY",
+      pos: k.vec2(GAME_W / 2, HUD_H + 22),
+      size: 8,
+      anchor: "center",
+      color: offline ? k.rgb(...C.green) : k.rgb(...C.grey),
+    });
+
+    if (!pulse) return;
+    const b = pulseBounds(pulse);
+    const warn = pulse.phase === "warn";
+    k.drawRect({
+      pos: k.vec2(b.x, b.y),
+      width: b.w,
+      height: b.h,
+      color: warn ? k.rgb(255, 70, 70) : k.rgb(255, 18, 40),
+      opacity: warn ? 0.18 + Math.abs(Math.sin(k.time() * 18)) * 0.14 : 0.42,
+    });
+    if (pulse.axis === "row") {
+      const y = b.y + b.h / 2;
+      k.drawLine({
+        p1: k.vec2(b.x, y),
+        p2: k.vec2(b.x + b.w, y),
+        width: warn ? 2 : 7,
+        color: warn ? k.rgb(255, 210, 63) : k.rgb(255, 244, 244),
+        opacity: warn ? 0.65 : 0.95,
+      });
+    } else {
+      const x = b.x + b.w / 2;
+      k.drawLine({
+        p1: k.vec2(x, b.y),
+        p2: k.vec2(x, b.y + b.h),
+        width: warn ? 2 : 7,
+        color: warn ? k.rgb(255, 210, 63) : k.rgb(255, 244, 244),
+        opacity: warn ? 0.65 : 0.95,
+      });
+    }
+  });
+
+  return { reset: resetDrone };
+}
+
 // ============================================================================
 // GAME
 // ============================================================================
@@ -574,7 +946,8 @@ type GameOpts = { level: number; score: number; lives: number };
 
 k.scene("game", (opts: GameOpts) => {
   const level = opts.level;
-  const cfg = LEVELS[level];
+  const cfg = LEVELS[level] ?? LEVELS[1];
+  const playArea = cfg.playArea ?? FULL_PLAY_AREA;
   let lives = opts.lives;
   let fuel = FUEL_MAX;
   let score = opts.score;
@@ -586,9 +959,20 @@ k.scene("game", (opts: GameOpts) => {
   type Mode = "drive" | "stall" | "launch" | "crash";
   let mode: Mode = "drive";
   let aim = k.vec2(1, 0); // last heading — seeds the bail-out direction
+  let aimTarget: any = null;
   let launchDir = k.vec2(1, 0);
   let launchDist = 0;
   let alarmT = 0;
+  let lastMouse: any = k.mousePos();
+  let slideT = 0;
+  let slideCooldown = 0;
+  let slideVel = k.vec2(0, 0);
+  let wetShakeT = 0;
+  let wetTapFlash = 0;
+  const moveKeyState: Record<string, boolean> = {};
+  let comboCount = 0;
+  let comboTimer = 0;
+  let comboPulse = 0;
 
   // --- Build the lawn -------------------------------------------------------
   const grass: any[][] = [];
@@ -596,6 +980,13 @@ k.scene("game", (opts: GameOpts) => {
   const trees = new Set<string>();
   for (const [c, r] of cfg.trees) trees.add(`${c},${r}`);
   const isTree = (c: number, r: number) => trees.has(`${c},${r}`);
+  const flowerbeds = new Set<string>();
+  for (const [c, r] of cfg.hazards?.flowerbeds ?? []) flowerbeds.add(`${c},${r}`);
+  const wetGrass = new Set<string>();
+  for (const [c, r] of cfg.hazards?.wet ?? []) wetGrass.add(`${c},${r}`);
+  const isPlayableTile = (c: number, r: number) => inPlayArea(playArea, c, r);
+  const isFlowerbed = (c: number, r: number) => flowerbeds.has(`${c},${r}`);
+  const isWetGrass = (c: number, r: number) => wetGrass.has(`${c},${r}`);
 
   let toMow = 0;
   for (let r = 0; r < ROWS; r++) {
@@ -604,26 +995,53 @@ k.scene("game", (opts: GameOpts) => {
     for (let c = 0; c < COLS; c++) {
       const x = c * TILE;
       const y = HUD_H + r * TILE;
+      if (!isPlayableTile(c, r)) {
+        k.add([k.sprite("mown"), k.pos(x, y), k.scale(2), k.z(0)]);
+        mown[r][c] = true;
+        continue;
+      }
       if (isTree(c, r)) {
         k.add([k.sprite("mown"), k.pos(x, y), k.scale(2), k.z(0)]);
         k.add([k.sprite("tree"), k.pos(x, y), k.scale(2), k.z(2), "tree"]);
         mown[r][c] = true;
         continue;
       }
+      if (isFlowerbed(c, r)) {
+        k.add([k.sprite("mown"), k.pos(x, y), k.scale(2), k.z(0)]);
+        k.add([k.sprite("flowerbed"), k.pos(x, y), k.scale(2), k.z(2)]);
+        mown[r][c] = true;
+        continue;
+      }
       grass[r][c] = k.add([k.sprite("grass"), k.pos(x, y), k.scale(2), k.z(0)]);
+      if (isWetGrass(c, r)) {
+        k.add([k.sprite("wetgrass"), k.pos(x, y), k.scale(2), k.z(1)]);
+      }
       mown[r][c] = false;
       toMow++;
     }
   }
   const totalToMow = toMow;
 
+  if (cfg.playArea) {
+    const r = areaRect(playArea);
+    const fence = (x: number, y: number, w: number, h: number) =>
+      k.add([k.rect(w, h), k.pos(x, y), k.color(106, 66, 36), k.z(3)]);
+    fence(r.left - 4, r.top - 4, r.right - r.left + 8, 4);
+    fence(r.left - 4, r.bottom, r.right - r.left + 8, 4);
+    fence(r.left - 4, r.top, 4, r.bottom - r.top);
+    fence(r.right, r.top, 4, r.bottom - r.top);
+  }
+
   // --- Player ---------------------------------------------------------------
+  const playerStart = () => tileCenter(playArea.c0, playArea.r0);
+  const startPos = playerStart();
   const player = k.add([
     k.sprite("player", { anim: "hover" }),
-    k.pos(TILE * 0.5, HUD_H + TILE * 0.5),
+    k.pos(startPos.x, startPos.y),
     k.anchor("center"),
     k.scale(2),
     k.area({ scale: 0.6 }),
+    k.rotate(0),
     k.opacity(1),
     k.z(5),
     "player",
@@ -632,8 +1050,9 @@ k.scene("game", (opts: GameOpts) => {
   const tryMove = (dx: number, dy: number) => {
     const move = (nx: number, ny: number) => {
       const half = 10;
-      nx = k.clamp(nx, half, GAME_W - half);
-      ny = k.clamp(ny, HUD_H + half, GAME_H - half);
+      const rect = areaRect(playArea);
+      nx = k.clamp(nx, rect.left + half, rect.right - half);
+      ny = k.clamp(ny, rect.top + half, rect.bottom - half);
       for (const [ox, oy] of [
         [-half, -half],
         [half, -half],
@@ -641,7 +1060,12 @@ k.scene("game", (opts: GameOpts) => {
         [half, half],
       ]) {
         const t = tileAt(nx + ox, ny + oy);
-        if (inBounds(t.c, t.r) && isTree(t.c, t.r)) return false;
+        if (
+          inBounds(t.c, t.r) &&
+          (!isPlayableTile(t.c, t.r) || isTree(t.c, t.r))
+        ) {
+          return false;
+        }
       }
       return { nx, ny };
     };
@@ -651,17 +1075,75 @@ k.scene("game", (opts: GameOpts) => {
     if (ry) player.pos.y = ry.ny;
   };
 
+  const currentTile = () => tileAt(player.pos.x, player.pos.y);
+  const onFlowerbed = () => {
+    const t = currentTile();
+    return inBounds(t.c, t.r) && isFlowerbed(t.c, t.r);
+  };
+  const onWetGrass = () => {
+    const t = currentTile();
+    return inBounds(t.c, t.r) && isWetGrass(t.c, t.r);
+  };
+
+  const comboMultFor = (count = comboCount) =>
+    Math.min(COMBO_MAX, 1 + Math.floor(Math.max(0, count) / COMBO_STEP));
+  const resetCombo = () => {
+    comboCount = 0;
+    comboTimer = 0;
+    comboPulse = 0;
+  };
+  const scorePop = (
+    text: string,
+    pos: any,
+    color: readonly [number, number, number],
+    size = 10,
+  ) => {
+    const pop = k.add([
+      k.text(text, { size }),
+      k.anchor("center"),
+      k.pos(pos.x, pos.y),
+      k.color(...color),
+      k.z(12),
+      k.opacity(1),
+      k.lifespan(0.5, { fade: 0.2 }),
+    ]);
+    pop.onUpdate(() => {
+      pop.pos.y -= 20 * k.dt();
+    });
+  };
+  const awardMowScore = (c: number, r: number) => {
+    const before = comboTimer > 0 ? comboMultFor() : 1;
+    comboCount = comboTimer > 0 ? comboCount + 1 : 1;
+    comboTimer = COMBO_WINDOW;
+    const mult = comboMultFor();
+    const gained = 10 * mult;
+    score += gained;
+    // Only spawn a floating label when the multiplier actually ticks up.
+    // (Popping text on *every* mowed tile created a new text entity each
+    // tile, and rasterizing a fresh glyph texture per tile is what made
+    // movement stutter once a combo got going.)
+    if (mult > before) {
+      comboPulse = 0.4;
+      sfx.combo();
+      haptic(20);
+      fuel = Math.min(FUEL_MAX, fuel + COMBO_FUEL_BONUS); // combos ease the fuel squeeze
+      scorePop(`x${mult}!`, tileCenter(c, r).add(k.vec2(0, -16)), C.yellow, 14);
+    }
+  };
+
   const winLevel = () => {
     sfx.level();
     if (level === 1) {
       k.go("cutscene", { score, lives }); // Gertrude bursts in -> level 2
     } else if (level === 2) {
       k.go("nightfall", { score, lives }); // night falls -> level 3
+    } else if (level === 3) {
+      k.go("laserfall", { score, lives }); // the drone arrives -> level 4
     } else {
       sfx.win();
       k.go("win", {
         score,
-        reason: "You slipped the mower back. She never proved a thing.",
+        reason: "You slipped the mower back after two impossible nights.",
       });
     }
   };
@@ -669,7 +1151,7 @@ k.scene("game", (opts: GameOpts) => {
   // Mow the tile at a world point; returns true if it was unmown grass.
   const mowAt = (x: number, y: number): boolean => {
     const t = tileAt(x, y);
-    if (inBounds(t.c, t.r) && !mown[t.r][t.c]) {
+    if (inBounds(t.c, t.r) && isPlayableTile(t.c, t.r) && !mown[t.r][t.c]) {
       mown[t.r][t.c] = true;
       k.destroy(grass[t.r][t.c]);
       k.add([
@@ -678,11 +1160,83 @@ k.scene("game", (opts: GameOpts) => {
         k.scale(2),
         k.z(0),
       ]);
-      score += 10;
+      awardMowScore(t.c, t.r);
       toMow--;
       return true;
     }
     return false;
+  };
+
+  const grabPoint = (point: any) => {
+    if (point.picked) return;
+    point.picked = true;
+    const value = point.value ?? SCORE_DROP_VALUE;
+    score += value;
+    sfx.point();
+    const pop = k.add([
+      k.text(`+${value}`, { size: 10 }),
+      k.anchor("center"),
+      k.pos(point.pos.x, point.pos.y - 12),
+      k.color(...C.yellow),
+      k.z(12),
+      k.opacity(1),
+      k.lifespan(0.45, { fade: 0.2 }),
+    ]);
+    pop.onUpdate(() => {
+      pop.pos.y -= 18 * k.dt();
+    });
+    point.opacity = 0;
+    k.destroy(point);
+  };
+
+  const dropScore = (origin: any) => {
+    const count = Math.min(SCORE_DROP_MAX, Math.floor(score / SCORE_DROP_VALUE));
+    if (count <= 0) return;
+    score -= count * SCORE_DROP_VALUE;
+
+    for (let i = 0; i < count; i++) {
+      let pos = clampPointToArea(playArea, origin, 12);
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const angle = (Math.PI * 2 * (i + attempt / 3)) / count + Math.random() * 0.35;
+        const dist = 24 + Math.random() * 38 + attempt * 3;
+        const candidate = clampPointToArea(
+          playArea,
+          {
+            x: origin.x + Math.cos(angle) * dist,
+            y: origin.y + Math.sin(angle) * dist,
+          },
+          12,
+        );
+        const tile = tileAt(candidate.x, candidate.y);
+        if (
+          inBounds(tile.c, tile.r) &&
+          isPlayableTile(tile.c, tile.r) &&
+          !isTree(tile.c, tile.r) &&
+          !isFlowerbed(tile.c, tile.r)
+        ) {
+          pos = candidate;
+          break;
+        }
+      }
+
+      const point: any = k.add([
+        k.sprite("point"),
+        k.pos(pos.x, pos.y),
+        k.anchor("center"),
+        k.scale(1.4),
+        k.area({ scale: 0.7 }),
+        k.rotate(0),
+        k.opacity(1),
+        k.z(4),
+        k.lifespan(SCORE_DROP_LIFETIME, { fade: 1.5 }),
+        "point",
+      ]);
+      point.value = SCORE_DROP_VALUE;
+      const phase = Math.random() * Math.PI * 2;
+      point.onUpdate(() => {
+        point.angle = Math.sin(k.time() * 5 + phase) * 10;
+      });
+    }
   };
 
   const grabFuel = (can: any) => {
@@ -695,10 +1249,22 @@ k.scene("game", (opts: GameOpts) => {
     }
   };
 
+  const resetAimTarget = () => {
+    aimTarget = clampPointToArea(playArea, player.pos.add(aim.scale(96)), 12);
+  };
+
+  const updateAimFromTarget = () => {
+    if (!aimTarget) return;
+    const toTarget = aimTarget.sub(player.pos);
+    if (toTarget.len() > 8) aim = toTarget.unit();
+  };
+
   const startLaunch = () => {
     if (mode !== "stall") return;
+    updateAimFromTarget();
     mode = "launch";
     launchDir = aim.len() > 0 ? aim.unit() : k.vec2(1, 0);
+    aimTarget = null;
     launchDist = 0;
     invuln = 99; // immune while rocketing through trees
     sfx.launch();
@@ -728,12 +1294,44 @@ k.scene("game", (opts: GameOpts) => {
     if (k.isKeyDown("right") || k.isKeyDown("d")) dx += 1;
     if (k.isKeyDown("up") || k.isKeyDown("w")) dy -= 1;
     if (k.isKeyDown("down") || k.isKeyDown("s")) dy += 1;
+    const mobile = mobileControls.direction();
+    dx += mobile.x;
+    dy += mobile.y;
     return { dx, dy };
   };
+  const readMoveTapCount = () => {
+    let taps = mobileControls.consumeMoveTaps();
+    for (const key of ["left", "right", "up", "down", "a", "d", "w", "s"]) {
+      const down = k.isKeyDown(key as any);
+      if (down && !moveKeyState[key]) taps++;
+      moveKeyState[key] = down;
+    }
+    return taps;
+  };
+
+  let mobileActionLabel = "";
+  const syncMobileAction = () => {
+    const nextLabel = mode === "stall" ? "FIRE" : "GO";
+    if (nextLabel === mobileActionLabel) return;
+    mobileActionLabel = nextLabel;
+    mobileControls.setAction(startLaunch, nextLabel);
+  };
+  syncMobileAction();
 
   k.onKeyPress("space", startLaunch);
+  k.onClick(() => {
+    if (mode !== "stall") return;
+    // Only treat clicks inside the lawn as a launch — clicking the HUD or the
+    // letterboxed margin shouldn't fire you off in a random direction. The
+    // crosshair already follows the cursor, so this clicks-to-fire-at-cursor.
+    const m = k.mousePos();
+    const r = areaRect(playArea);
+    if (m.x < r.left || m.x > r.right || m.y < r.top || m.y > r.bottom) return;
+    startLaunch();
+  });
 
   k.onUpdate(() => {
+    syncMobileAction();
     // Low-fuel alarm — beeps faster the closer you are to empty.
     if (mode === "drive" && fuel > 0 && fuel < FUEL_LOW) {
       alarmT -= k.dt();
@@ -749,16 +1347,55 @@ k.scene("game", (opts: GameOpts) => {
       }
     }
 
+    const mouseNow = k.mousePos();
+    const mouseMoved = mouseNow.dist(lastMouse) > 0.5;
+    lastMouse = mouseNow.clone();
+    const moveTaps = readMoveTapCount();
+    slideCooldown = Math.max(0, slideCooldown - k.dt());
+    wetShakeT = Math.max(0, wetShakeT - k.dt());
+    wetTapFlash = Math.max(0, wetTapFlash - k.dt());
+    if (comboTimer > 0) {
+      comboTimer = Math.max(0, comboTimer - k.dt());
+      if (comboTimer <= 0) comboCount = 0;
+    }
+    comboPulse = Math.max(0, comboPulse - k.dt());
+
     if (mode === "drive") {
       const { dx, dy } = readDir();
-      if (dx !== 0 || dy !== 0) {
-        const len = Math.hypot(dx, dy);
-        tryMove(
-          (dx / len) * PLAYER_SPEED * k.dt(),
-          (dy / len) * PLAYER_SPEED * k.dt(),
-        );
+      const hasInput = dx !== 0 || dy !== 0;
+      const dir = hasInput
+        ? k.vec2(dx / Math.hypot(dx, dy), dy / Math.hypot(dx, dy))
+        : k.vec2(0, 0);
+      if (slideT > 0) {
+        slideT = Math.max(0, slideT - k.dt());
+        if (moveTaps > 0) {
+          slideT = Math.max(0, slideT - WET_TAP_RECOVER * moveTaps);
+          slideVel = slideVel.scale(Math.pow(WET_TAP_BRAKE, moveTaps));
+          wetShakeT = 0.22;
+          wetTapFlash = 0.35;
+          sfx.shake();
+        }
+        if (hasInput) {
+          slideVel = slideVel.add(dir.scale(WET_SLIDE_STEER * k.dt()));
+          aim = dir;
+          player.flipX = dx < 0;
+        } else if (Math.abs(slideVel.x) > 8) {
+          player.flipX = slideVel.x < 0;
+        }
+        slideVel = slideVel.scale(Math.max(0, 1 - WET_SLIDE_DRAG * k.dt()));
+        tryMove(slideVel.x * k.dt(), slideVel.y * k.dt());
+        if (slideVel.len() < 20 && slideT < 0.35) slideT = 0;
+      } else if (hasInput) {
+        const speed = PLAYER_SPEED * (onFlowerbed() ? FLOWER_SLOW : 1);
+        tryMove(dir.x * speed * k.dt(), dir.y * speed * k.dt());
         player.flipX = dx < 0;
-        aim = k.vec2(dx / len, dy / len);
+        aim = dir;
+        if (onWetGrass() && slideCooldown <= 0) {
+          slideT = WET_SLIDE_TIME;
+          slideCooldown = WET_SLIDE_TIME + 0.25;
+          slideVel = dir.scale(WET_SLIDE_SPEED);
+          sfx.slide();
+        }
       }
       if (mowAt(player.pos.x, player.pos.y)) {
         sfx.mow();
@@ -771,23 +1408,42 @@ k.scene("game", (opts: GameOpts) => {
       if (fuel <= 0) {
         fuel = 0;
         mode = "stall"; // out of fuel — line up a bail-out
+        resetAimTarget();
         alarmT = 0;
       }
     } else if (mode === "stall") {
       const { dx, dy } = readDir();
+      let target = aimTarget ?? clampPointToArea(playArea, player.pos.add(aim.scale(96)), 12);
       if (dx !== 0 || dy !== 0) {
         const len = Math.hypot(dx, dy);
-        aim = k.vec2(dx / len, dy / len);
+        target = clampPointToArea(
+          playArea,
+          target.add(k.vec2(dx / len, dy / len).scale(AIM_CURSOR_SPEED * k.dt())),
+          12,
+        );
         player.flipX = dx < 0;
       }
+      const rect = areaRect(playArea);
+      if (
+        mouseMoved &&
+        mouseNow.x >= rect.left &&
+        mouseNow.x <= rect.right &&
+        mouseNow.y >= rect.top &&
+        mouseNow.y <= rect.bottom
+      ) {
+        target = clampPointToArea(playArea, mouseNow, 12);
+      }
+      aimTarget = target;
+      updateAimFromTarget();
     } else if (mode === "launch") {
       const prev = player.pos.clone();
       const step = launchDir.scale(LAUNCH_SPEED * k.dt());
       const half = 10;
+      const rect = areaRect(playArea);
       const nx = player.pos.x + step.x;
       const ny = player.pos.y + step.y;
-      const cx = k.clamp(nx, half, GAME_W - half);
-      const cy = k.clamp(ny, HUD_H + half, GAME_H - half);
+      const cx = k.clamp(nx, rect.left + half, rect.right - half);
+      const cy = k.clamp(ny, rect.top + half, rect.bottom - half);
       const hitWall = cx !== nx || cy !== ny;
       player.pos.x = cx;
       player.pos.y = cy;
@@ -807,6 +1463,9 @@ k.scene("game", (opts: GameOpts) => {
       for (const can of k.get("fuel")) {
         if (player.pos.dist(can.pos) < 24) grabFuel(can);
       }
+      for (const point of k.get("point")) {
+        if (player.pos.dist(point.pos) < 22) grabPoint(point);
+      }
 
       launchDist += step.len();
       if (fuel > 0) endLaunch(true);
@@ -822,35 +1481,56 @@ k.scene("game", (opts: GameOpts) => {
     } else {
       player.opacity = 1;
     }
+
+    if (mode === "drive" && wetShakeT > 0) {
+      const shake = Math.sin(k.time() * 58) * 3 * (wetShakeT / 0.22);
+      player.angle = shake;
+    } else if (player.angle !== 0) {
+      player.angle = 0;
+    }
   });
 
   // --- Enemies --------------------------------------------------------------
   const loseLife = (reason: string, resetPos: () => void) => {
-    if (invuln > 0 || mode !== "drive") return;
+    if (invuln > 0 || mode !== "drive") return false;
+    if (lives > 1) dropScore(player.pos.clone());
     lives--;
     sfx.hit();
+    haptic([0, 80, 40, 80]);
     k.shake(8);
     invuln = 2;
-    player.pos = k.vec2(TILE * 0.5, HUD_H + TILE * 0.5);
+    resetCombo();
+    slideT = 0;
+    slideVel = k.vec2(0, 0);
+    player.pos = playerStart();
+    resetAimTarget();
     resetPos();
     if (lives <= 0) {
       sfx.lose();
       k.go("lose", { score, reason });
     }
+    return true;
   };
 
   // Dog (daytime levels only).
   if (cfg.hasDog) {
+    const dogStart = () =>
+      tileCenter(playArea.c0 + playArea.cols - 1, playArea.r0 + playArea.rows - 1);
+    const dogHome = dogStart();
     const dog = k.add([
       k.sprite("dog", { anim: "run" }),
-      k.pos(GAME_W - TILE, GAME_H - TILE),
+      k.pos(dogHome.x, dogHome.y),
       k.anchor("center"),
       k.scale(2),
       k.area({ scale: 0.6 }),
       k.z(5),
       "dog",
     ]);
-    k.wait(cfg.dogDelay, () => (dogAwake = true));
+    const wakeDog = () => {
+      dogAwake = false;
+      k.wait(cfg.dogDelay, () => (dogAwake = true));
+    };
+    wakeDog();
     dog.onUpdate(() => {
       if (!dogAwake) return;
       const dir = player.pos.sub(dog.pos);
@@ -862,16 +1542,19 @@ k.scene("game", (opts: GameOpts) => {
     });
     player.onCollide("dog", () =>
       loseLife("The dog finally caught you!", () => {
-        dog.pos = k.vec2(GAME_W - TILE, GAME_H - TILE);
+        dog.pos = dogStart();
+        wakeDog();
       }),
     );
   }
 
   // Angry neighbour (boss — levels 2 and 3).
   if (cfg.hasNeighbor) {
+    const bossStart = () => tileCenter(playArea.c0 + playArea.cols - 1, playArea.r0);
+    const bossHome = bossStart();
     const boss = k.add([
       k.sprite("neighbor", { anim: "stomp" }),
-      k.pos(GAME_W - TILE, HUD_H + TILE),
+      k.pos(bossHome.x, bossHome.y),
       k.anchor("center"),
       k.scale(2),
       k.area({ scale: 0.55 }),
@@ -880,7 +1563,7 @@ k.scene("game", (opts: GameOpts) => {
     ]);
     player.onCollide("neighbor", () =>
       loseLife("Gertrude grabbed you by the collar!", () => {
-        boss.pos = k.vec2(GAME_W - TILE, HUD_H + TILE);
+        boss.pos = bossStart();
       }),
     );
 
@@ -900,16 +1583,32 @@ k.scene("game", (opts: GameOpts) => {
     }
   }
 
+  if (cfg.hasLaserDrone) {
+    const droneStart = tileCenter(
+      playArea.c0 + Math.floor(playArea.cols / 2),
+      playArea.r0,
+    );
+    const drone = k.add([
+      k.sprite("drone", { anim: "hover" }),
+      k.pos(droneStart.x, droneStart.y - 8),
+      k.anchor("center"),
+      k.scale(2),
+      k.z(6),
+      "drone",
+    ]);
+    setupLaserDrone(drone, player, playArea, loseLife);
+  }
+
   // --- Fuel cans ------------------------------------------------------------
   const spawnFuel = () => {
     let c = 0;
     let r = 0;
     let tries = 0;
     do {
-      c = k.randi(0, COLS);
-      r = k.randi(0, ROWS);
+      c = k.randi(playArea.c0, playArea.c0 + playArea.cols);
+      r = k.randi(playArea.r0, playArea.r0 + playArea.rows);
       tries++;
-    } while (isTree(c, r) && tries < 20);
+    } while ((isTree(c, r) || isFlowerbed(c, r)) && tries < 20);
     k.add([
       k.sprite("fuel"),
       k.pos(c * TILE + TILE / 2, HUD_H + r * TILE + TILE / 2),
@@ -925,6 +1624,7 @@ k.scene("game", (opts: GameOpts) => {
   k.loop(FUEL_SPAWN_EVERY, spawnFuel);
   k.wait(1.5, spawnFuel);
   player.onCollide("fuel", (can: any) => grabFuel(can));
+  player.onCollide("point", (point: any) => grabPoint(point));
 
   // --- HUD ------------------------------------------------------------------
   k.add([k.rect(GAME_W, HUD_H), k.color(20, 30, 48), k.pos(0, 0), k.z(20)]);
@@ -946,6 +1646,28 @@ k.scene("game", (opts: GameOpts) => {
     k.pos(GAME_W / 2, 6),
     k.color(...C.white),
     k.z(21),
+  ]);
+  const comboLabel = k.add([
+    k.text("", { size: 10 }),
+    k.anchor("top"),
+    k.pos(GAME_W / 2, 22),
+    k.color(...C.yellow),
+    k.z(21),
+  ]);
+  const COMBO_W = 92;
+  const comboBg = k.add([
+    k.rect(COMBO_W + 4, 5),
+    k.color(40, 40, 50),
+    k.pos(GAME_W / 2 - COMBO_W / 2 - 2, 34),
+    k.opacity(0),
+    k.z(21),
+  ]);
+  const comboBar = k.add([
+    k.rect(0, 3),
+    k.color(...C.yellow),
+    k.pos(GAME_W / 2 - COMBO_W / 2, 35),
+    k.opacity(0),
+    k.z(22),
   ]);
   const mownLabel = k.add([
     k.text("", { size: 14 }),
@@ -970,32 +1692,112 @@ k.scene("game", (opts: GameOpts) => {
     mownLabel.text = `MOWN ${pct}%`;
     fuelBar.width = (fuel / FUEL_MAX) * FB_W;
     fuelBar.color = fuel < FUEL_LOW ? k.rgb(...C.red) : k.rgb(...C.green);
+    if (comboCount > 1 && comboTimer > 0) {
+      const mult = comboMultFor();
+      comboLabel.text = `${comboCount} CHAIN  x${mult}`;
+      comboBg.opacity = 1;
+      comboBar.opacity = 1;
+      comboLabel.color =
+        comboPulse > 0
+          ? k.rgb(...C.white)
+          : mult >= 4
+            ? k.rgb(...C.red)
+            : k.rgb(...C.yellow);
+      comboBar.width = (comboTimer / COMBO_WINDOW) * COMBO_W;
+      comboBar.color = mult >= 4 ? k.rgb(...C.red) : k.rgb(...C.yellow);
+    } else {
+      comboLabel.text = "";
+      comboBar.width = 0;
+      comboBg.opacity = 0;
+      comboBar.opacity = 0;
+    }
+  });
+
+  k.onDraw(() => {
+    if (wetTapFlash <= 0) return;
+    const flash = wetTapFlash / 0.35;
+    const pulse = Math.sin(k.time() * 46) * 2;
+
+    k.drawCircle({
+      pos: player.pos,
+      radius: 14 + (1 - flash) * 14,
+      color: k.rgb(72, 202, 228),
+      opacity: 0.14 * flash,
+    });
+
+    for (let i = 0; i < 8; i++) {
+      const angle = (Math.PI * 2 * i) / 8 + k.time() * 0.35;
+      const dist = 12 + (1 - flash) * 22 + (i % 2) * 4;
+      const dropPos = player.pos.add(
+        k.vec2(Math.cos(angle) * dist, Math.sin(angle) * dist * 0.7 + pulse),
+      );
+      k.drawCircle({
+        pos: dropPos,
+        radius: 1.5 + (i % 3) * 0.5,
+        color: k.rgb(172, 232, 255),
+        opacity: 0.75 * flash,
+      });
+    }
   });
 
   // --- Bail-out aim UI (registered last, so it draws over night darkness) ---
   k.onDraw(() => {
     if (mode !== "stall") return;
-    const tip = player.pos.add(aim.scale(48));
-    k.drawLine({ p1: player.pos, p2: tip, width: 4, color: k.rgb(...C.yellow) });
-    const back = aim.scale(-14);
-    const perp = k.vec2(-aim.y, aim.x).scale(9);
+    const tip = aimTarget ?? player.pos.add(aim.scale(80));
+    const toTip = tip.sub(player.pos);
+    const dir = toTip.len() > 1 ? toTip.unit() : aim;
+    k.drawLine({
+      p1: player.pos,
+      p2: tip,
+      width: 2,
+      color: k.rgb(...C.yellow),
+      opacity: 0.75,
+    });
+    k.drawCircle({
+      pos: tip,
+      radius: 12,
+      color: k.rgb(255, 210, 63),
+      opacity: 0.22,
+    });
+    k.drawLine({
+      p1: tip.add(k.vec2(-16, 0)),
+      p2: tip.add(k.vec2(16, 0)),
+      width: 2,
+      color: k.rgb(...C.yellow),
+    });
+    k.drawLine({
+      p1: tip.add(k.vec2(0, -16)),
+      p2: tip.add(k.vec2(0, 16)),
+      width: 2,
+      color: k.rgb(...C.yellow),
+    });
+    const back = dir.scale(-14);
+    const perp = k.vec2(-dir.y, dir.x).scale(9);
     k.drawTriangle({
       p1: tip,
       p2: tip.add(back).add(perp),
       p3: tip.add(back).sub(perp),
       color: k.rgb(...C.yellow),
     });
+    k.drawRect({
+      pos: k.vec2(82, HUD_H + 6),
+      width: GAME_W - 164,
+      height: 42,
+      color: k.rgb(8, 14, 24),
+      opacity: 0.82,
+      outline: { width: 1, color: k.rgb(...C.yellow) },
+    });
     k.drawText({
-      text: "OUT OF FUEL!",
-      pos: k.vec2(GAME_W / 2, HUD_H + 18),
-      size: 16,
+      text: "BOOT LAUNCH",
+      pos: k.vec2(GAME_W / 2, HUD_H + 14),
+      size: 14,
       anchor: "center",
       color: Math.floor(k.time() * 4) % 2 ? k.rgb(...C.red) : k.rgb(...C.white),
     });
     k.drawText({
-      text: "aim with the keys  -  SPACE to launch!",
-      pos: k.vec2(GAME_W / 2, HUD_H + 38),
-      size: 11,
+      text: "aim target  -  SPACE / GO to fire",
+      pos: k.vec2(GAME_W / 2, HUD_H + 34),
+      size: 10,
       anchor: "center",
       color: k.rgb(...C.white),
     });
@@ -1046,7 +1848,7 @@ k.scene("cutscene", (data: { score: number; lives: number }) => {
       k.color(...C.white),
     ]);
     const hint = k.add([
-      k.text("press SPACE to keep mowing!", { size: 13 }),
+      k.text("press SPACE or GO to keep mowing!", { size: 13 }),
       k.anchor("center"),
       k.pos(GAME_W / 2, GAME_H - 26),
       k.color(...C.yellow),
@@ -1064,6 +1866,7 @@ k.scene("cutscene", (data: { score: number; lives: number }) => {
     if (!ready) return;
     k.go("game", { level: 2, score: data.score, lives: data.lives });
   };
+  mobileControls.setAction(go, "GO");
   k.onKeyPress("space", go);
   k.onClick(go);
 });
@@ -1092,7 +1895,7 @@ k.scene("nightfall", (data: { score: number; lives: number }) => {
       "It's pitch dark now — but Gertrude is still\n" +
         "out there, and she's got a TORCH.\n\n" +
         "Stay out of her beam. Duck behind the trees\n" +
-        "for cover and mow the last lawn unseen.",
+        "for cover and keep mowing unseen.",
       { size: 14, align: "center", lineSpacing: 6 },
     ),
     k.anchor("center"),
@@ -1100,7 +1903,7 @@ k.scene("nightfall", (data: { score: number; lives: number }) => {
     k.color(...C.grey),
   ]);
   const hint = k.add([
-    k.text("press SPACE to sneak out", { size: 13 }),
+    k.text("press SPACE or GO to sneak out", { size: 13 }),
     k.anchor("center"),
     k.pos(GAME_W / 2, GAME_H - 26),
     k.color(...C.yellow),
@@ -1115,6 +1918,73 @@ k.scene("nightfall", (data: { score: number; lives: number }) => {
   const go = () => {
     if (ready) k.go("game", { level: 3, score: data.score, lives: data.lives });
   };
+  mobileControls.setAction(go, "GO");
+  k.onKeyPress("space", go);
+  k.onClick(go);
+});
+
+// ============================================================================
+// LASERFALL — transition into the second night / drone level
+// ============================================================================
+
+k.scene("laserfall", (data: { score: number; lives: number }) => {
+  bgFill();
+  sfx.boss();
+
+  k.add([
+    k.circle(16),
+    k.pos(GAME_W / 2, 70),
+    k.color(238, 232, 190),
+    k.opacity(0.85),
+  ]);
+  const drone = k.add([
+    k.sprite("drone", { anim: "hover" }),
+    k.anchor("center"),
+    k.pos(GAME_W / 2, 126),
+    k.scale(3),
+    k.rotate(0),
+    k.z(3),
+  ]);
+  drone.onUpdate(() => {
+    drone.pos.y = 126 + Math.sin(k.time() * 5) * 4;
+    drone.angle = Math.sin(k.time() * 3) * 4;
+  });
+
+  k.add([
+    k.text("THE SECOND NIGHT", { size: 30 }),
+    k.anchor("center"),
+    k.pos(GAME_W / 2, 185),
+    k.color(...C.red),
+  ]);
+  k.add([
+    k.text(
+      "Gertrude called in her garden security drone.\n\n" +
+        "It paints whole rows and columns before firing.\n" +
+        "Move when the warning line appears, then finish\n" +
+        "the lawn before the battery gives out.",
+      { size: 14, align: "center", lineSpacing: 6 },
+    ),
+    k.anchor("center"),
+    k.pos(GAME_W / 2, GAME_H / 2 + 58),
+    k.color(...C.grey),
+  ]);
+  const hint = k.add([
+    k.text("press SPACE or GO for the final night", { size: 13 }),
+    k.anchor("center"),
+    k.pos(GAME_W / 2, GAME_H - 26),
+    k.color(...C.yellow),
+    k.opacity(1),
+  ]);
+  hint.onUpdate(() => {
+    hint.opacity = Math.floor(k.time() * 2) % 2 ? 0.3 : 1;
+  });
+
+  let ready = false;
+  k.wait(0.6, () => (ready = true));
+  const go = () => {
+    if (ready) k.go("game", { level: 4, score: data.score, lives: data.lives });
+  };
+  mobileControls.setAction(go, "GO");
   k.onKeyPress("space", go);
   k.onClick(go);
 });
@@ -1144,14 +2014,27 @@ function endScene(
         k.color(...C.grey),
       ]);
     }
+    const prevBest = getHiScore();
+    const best = recordScore(data.score);
+    const isNewBest = data.score > prevBest && data.score > 0;
     k.add([
       k.text(`Score: ${data.score}`, { size: 20 }),
       k.anchor("center"),
-      k.pos(GAME_W / 2, GAME_H / 2 + 30),
+      k.pos(GAME_W / 2, GAME_H / 2 + 24),
       k.color(...C.yellow),
     ]);
+    const bestTone: readonly [number, number, number] = isNewBest
+      ? C.green
+      : C.grey;
     k.add([
-      k.text("press SPACE to play again", { size: 13 }),
+      k.text(isNewBest ? "NEW BEST!" : `Best: ${best}`, { size: 14 }),
+      k.anchor("center"),
+      k.pos(GAME_W / 2, GAME_H / 2 + 50),
+      k.color(...bestTone),
+    ]);
+    if (isNewBest) haptic([0, 60, 50, 60, 50, 120]);
+    k.add([
+      k.text("press SPACE or GO to play again", { size: 13 }),
       k.anchor("center"),
       k.pos(GAME_W / 2, GAME_H / 2 + 80),
       k.color(...C.white),
@@ -1163,6 +2046,7 @@ function endScene(
     const restart = () => {
       if (ready) k.go("story");
     };
+    mobileControls.setAction(restart, "AGAIN");
     k.onKeyPress("space", restart);
     k.onClick(restart);
   });
@@ -1197,6 +2081,7 @@ type Pl = {
 
 k.scene("twoplayer", (opts: { coop: boolean }) => {
   const coop = opts.coop;
+  mobileControls.setAction(null, "GO");
 
   const trees = new Set<string>();
   for (const [c, r] of TWOP_TREES) trees.add(`${c},${r}`);
@@ -1317,6 +2202,12 @@ k.scene("twoplayer", (opts: { coop: boolean }) => {
       if (p.keys.right.some((kk) => k.isKeyDown(kk as any))) dx += 1;
       if (p.keys.up.some((kk) => k.isKeyDown(kk as any))) dy -= 1;
       if (p.keys.down.some((kk) => k.isKeyDown(kk as any))) dy += 1;
+      if (p.id === 1) {
+        const mobile = mobileControls.direction();
+        dx += mobile.x;
+        dy += mobile.y;
+        mobileControls.consumeMoveTaps();
+      }
       if (dx !== 0 || dy !== 0) {
         const l = Math.hypot(dx, dy);
         moveP(p, (dx / l) * PLAYER_SPEED * k.dt(), (dy / l) * PLAYER_SPEED * k.dt());
@@ -1466,7 +2357,7 @@ k.scene(
       ]);
     });
     k.add([
-      k.text("press SPACE for the menu", { size: 13 }),
+      k.text("press SPACE or GO for the menu", { size: 13 }),
       k.anchor("center"),
       k.pos(GAME_W / 2, GAME_H / 2 + 80),
       k.color(...C.white),
@@ -1477,6 +2368,7 @@ k.scene(
     const back = () => {
       if (ready) k.go("menu");
     };
+    mobileControls.setAction(back, "MENU");
     k.onKeyPress("space", back);
     k.onClick(back);
   },

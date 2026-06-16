@@ -31,6 +31,17 @@ export const sfx = {
     blip(440, 0.08, "sine");
     setTimeout(() => blip(660, 0.1, "sine"), 80);
   },
+  point: () => blip(740 + Math.random() * 70, 0.05, "triangle", 0.045),
+  combo: () => {
+    [660, 880].forEach((f, i) =>
+      setTimeout(() => blip(f, 0.08, "triangle", 0.06), i * 55),
+    );
+  },
+  slide: () => blip(330, 0.16, "sine", 0.055),
+  shake: () => {
+    blip(520 + Math.random() * 120, 0.035, "square", 0.035);
+    setTimeout(() => blip(380 + Math.random() * 80, 0.035, "triangle", 0.03), 28);
+  },
   hit: () => blip(110, 0.3, "sawtooth", 0.12),
   win: () => {
     [523, 659, 784, 1047].forEach((f, i) =>
@@ -58,6 +69,12 @@ export const sfx = {
   spot: () => {
     [880, 988].forEach((f, i) =>
       setTimeout(() => blip(f, 0.1, "square", 0.09), i * 90),
+    );
+  },
+  laserWarn: () => blip(698, 0.08, "square", 0.05),
+  laserFire: () => {
+    [110, 147, 196].forEach((f, i) =>
+      setTimeout(() => blip(f, 0.12, "sawtooth", 0.11), i * 35),
     );
   },
   // Single warning beep — fired repeatedly (and faster) as fuel runs low.
