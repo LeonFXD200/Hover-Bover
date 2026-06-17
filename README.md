@@ -23,11 +23,11 @@ npm run dev      # starts a hot-reloading dev server (http://localhost:5173)
 ## Build
 
 ```bash
-npm run build    # type-checks, then bundles to ./dist
+npm run build    # type-checks, then bundles to ./docs
 npm run preview  # serve the production build locally to check it
 ```
 
-The build output in `dist/` is plain static files (HTML + JS + assets) — host
+The build output in `docs/` is plain static files (HTML + JS + assets) — host
 it anywhere.
 
 ## Deploy
@@ -35,8 +35,9 @@ it anywhere.
 Any static host works. Easiest options (all free):
 
 - **Cloudflare Pages / Netlify / Vercel** — connect this git repo, set
-  build command `npm run build` and output directory `dist`. Auto-deploys on push.
-- **GitHub Pages** — push `dist/` to a `gh-pages` branch, or use a Pages action.
+  build command `npm run build` and output directory `docs`. Auto-deploys on push.
+- **GitHub Pages** — in Settings -> Pages, choose **Deploy from a branch**,
+  branch `master`, folder `/docs`.
   (`base: "./"` in `vite.config.ts` already makes the build work from a subpath.)
 
 ## Project layout
