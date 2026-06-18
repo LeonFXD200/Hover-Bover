@@ -43,7 +43,15 @@ const COMBO_WINDOW = 1.65;
 const COMBO_STEP = 4;
 const COMBO_MAX = 6;
 const COMBO_FUEL_BONUS = 6; // each multiplier step tops up a little fuel
-const LASER_BATTERY = 30; // drone powers down after this many seconds (escape valve)
+const LASER_BATTERY = 45; // drone powers down after this many seconds (escape valve)
+const NIGHT_BASE_VISION = 44;
+const NVG_VISION = 108;
+const DRONE_OFFLINE_BASE_VISION = 78;
+const DRONE_OFFLINE_NVG_VISION = 128;
+const NVG_CHARGE_MAX = 18;
+const NVG_PICKUP_CHARGE = 14;
+const NVG_SPAWN_EVERY = 12;
+const NVG_PICKUP_LIFETIME = 8;
 
 // Per-level setup: tree layout, how fast the dog wakes up, and which threats
 // are active. Level 1 is a fenced starter garden; later nights add torch
@@ -52,6 +60,11 @@ type PlayArea = { c0: number; r0: number; cols: number; rows: number };
 type HazardCfg = {
   flowerbeds?: [number, number][];
   wet?: [number, number][];
+};
+type NightVisionState = {
+  active: boolean;
+  radius: number;
+  chargeFrac: number;
 };
 type LevelCfg = {
   trees: [number, number][];
@@ -610,6 +623,79 @@ k.scene("story", () => {
   k.onClick(advance);
 });
 
+// --- Night vision / darkness rendering --------------------------------------
+
+function drawNvgOverlay(vision: NightVisionState, focus: any) {
+  if (!vision.active) return;
+
+  const pulse = 0.5 + Math.sin(k.time() * 4.4) * 0.5;
+  const lowChargeBlink = vision.chargeFrac < 0.25 ? Math.floor(k.time() * 9) % 2 : 1;
+  const alpha = lowChargeBlink ? 1 : 0.35;
+
+  k.drawRect({
+    pos: k.vec2(0, HUD_H),
+    width: GAME_W,
+    height: GAME_H - HUD_H,
+    color: k.rgb(13, 255, 95),
+    opacity: (0.035 + pulse * 0.018) * alpha,
+  });
+
+  for (let y = HUD_H + 3; y < GAME_H; y += 8) {
+    k.drawLine({
+      p1: k.vec2(0, y),
+      p2: k.vec2(GAME_W, y),
+      width: 1,
+      color: k.rgb(92, 255, 137),
+      opacity: 0.08 * alpha,
+    });
+  }
+
+  k.drawCircle({
+    pos: focus,
+    radius: vision.radius + 12 + pulse * 4,
+    color: k.rgb(45, 255, 103),
+    opacity: 0.08 * alpha,
+  });
+  k.drawCircle({
+    pos: focus,
+    radius: vision.radius * 0.52,
+    color: k.rgb(192, 255, 198),
+    opacity: 0.035 * alpha,
+  });
+
+  const r = Math.max(28, vision.radius * 0.48);
+  const tick = 12;
+  const col = k.rgb(154, 255, 162);
+  k.drawLine({
+    p1: focus.add(k.vec2(-r, 0)),
+    p2: focus.add(k.vec2(-r + tick, 0)),
+    width: 1,
+    color: col,
+    opacity: 0.7 * alpha,
+  });
+  k.drawLine({
+    p1: focus.add(k.vec2(r - tick, 0)),
+    p2: focus.add(k.vec2(r, 0)),
+    width: 1,
+    color: col,
+    opacity: 0.7 * alpha,
+  });
+  k.drawLine({
+    p1: focus.add(k.vec2(0, -r)),
+    p2: focus.add(k.vec2(0, -r + tick)),
+    width: 1,
+    color: col,
+    opacity: 0.7 * alpha,
+  });
+  k.drawLine({
+    p1: focus.add(k.vec2(0, r - tick)),
+    p2: focus.add(k.vec2(0, r)),
+    width: 1,
+    color: col,
+    opacity: 0.7 * alpha,
+  });
+}
+
 // --- Night boss: torch, line-of-sight detection, darkness rendering ---------
 
 const TORCH_RANGE = 155;
@@ -621,6 +707,7 @@ function setupNightBoss(
   boss: any,
   player: any,
   isTree: (c: number, r: number) => boolean,
+  getNightVision: () => NightVisionState,
 ) {
   let facing = Math.PI; // start looking left
   let hunting = false;
@@ -699,6 +786,7 @@ function setupNightBoss(
   // Darkness over the playfield, with light "holes" cut out for the player's
   // headlights, the torch beam, and a small glow around the neighbour.
   k.onDraw(() => {
+    const vision = getNightVision();
     k.drawSubtracted(
       () =>
         k.drawRect({
@@ -709,7 +797,11 @@ function setupNightBoss(
           opacity: 0.94,
         }),
       () => {
-        k.drawCircle({ pos: player.pos, radius: 58, color: k.rgb(255, 255, 255) });
+        k.drawCircle({
+          pos: player.pos,
+          radius: vision.radius,
+          color: k.rgb(255, 255, 255),
+        });
         k.drawCircle({ pos: boss.pos, radius: 24, color: k.rgb(255, 255, 255) });
         k.drawPolygon({ pts: torchPts(), color: k.rgb(255, 255, 255) });
       },
@@ -720,6 +812,7 @@ function setupNightBoss(
       color: hunting ? k.rgb(255, 90, 70) : k.rgb(255, 226, 120),
       opacity: 0.16,
     });
+    drawNvgOverlay(vision, player.pos);
   });
 
   return { isHunting: () => hunting };
@@ -740,6 +833,7 @@ function setupLaserDrone(
   player: any,
   playArea: PlayArea,
   hitPlayer: (reason: string, resetPos: () => void) => boolean,
+  getNightVision: () => NightVisionState,
 ) {
   const rect = areaRect(playArea);
   let cooldown = 1.0;
@@ -856,6 +950,13 @@ function setupLaserDrone(
   });
 
   k.onDraw(() => {
+    const vision = getNightVision();
+    const playerRadius = offline
+      ? vision.active
+        ? DRONE_OFFLINE_NVG_VISION
+        : DRONE_OFFLINE_BASE_VISION
+      : vision.radius;
+
     // Night lifts a little once the drone is dead.
     k.drawSubtracted(
       () =>
@@ -869,7 +970,7 @@ function setupLaserDrone(
       () => {
         k.drawCircle({
           pos: player.pos,
-          radius: offline ? 90 : 62,
+          radius: playerRadius,
           color: k.rgb(255, 255, 255),
         });
         if (!offline) {
@@ -877,6 +978,7 @@ function setupLaserDrone(
         }
       },
     );
+    drawNvgOverlay(vision, player.pos);
 
     // Battery gauge under the HUD.
     const BAT_W = 120;
@@ -953,6 +1055,8 @@ k.scene("game", (opts: GameOpts) => {
   let score = opts.score;
   let dogAwake = false;
   let invuln = 0;
+  let nvgCharge = 0;
+  let nvgPulse = 0;
 
   // Player state machine: normal driving, stalled (out of fuel, aiming a
   // bail-out), launching across the pitch, or crash-landing.
@@ -973,6 +1077,13 @@ k.scene("game", (opts: GameOpts) => {
   let comboCount = 0;
   let comboTimer = 0;
   let comboPulse = 0;
+
+  const nvgActive = () => cfg.night === true && nvgCharge > 0;
+  const getNightVision = (): NightVisionState => ({
+    active: nvgActive(),
+    radius: nvgActive() ? NVG_VISION : NIGHT_BASE_VISION,
+    chargeFrac: nvgCharge / NVG_CHARGE_MAX,
+  });
 
   // --- Build the lawn -------------------------------------------------------
   const grass: any[][] = [];
@@ -1249,6 +1360,17 @@ k.scene("game", (opts: GameOpts) => {
     }
   };
 
+  const grabNvg = (goggles: any) => {
+    if (goggles.picked) return;
+    goggles.picked = true;
+    nvgCharge = Math.min(NVG_CHARGE_MAX, nvgCharge + NVG_PICKUP_CHARGE);
+    nvgPulse = 0.45;
+    sfx.nvg();
+    haptic(25);
+    scorePop("NVG", goggles.pos.add(k.vec2(0, -14)), C.green, 12);
+    k.destroy(goggles);
+  };
+
   const resetAimTarget = () => {
     aimTarget = clampPointToArea(playArea, player.pos.add(aim.scale(96)), 12);
   };
@@ -1332,6 +1454,9 @@ k.scene("game", (opts: GameOpts) => {
 
   k.onUpdate(() => {
     syncMobileAction();
+    if (nvgCharge > 0) nvgCharge = Math.max(0, nvgCharge - k.dt());
+    nvgPulse = Math.max(0, nvgPulse - k.dt());
+
     // Low-fuel alarm — beeps faster the closer you are to empty.
     if (mode === "drive" && fuel > 0 && fuel < FUEL_LOW) {
       alarmT -= k.dt();
@@ -1463,6 +1588,9 @@ k.scene("game", (opts: GameOpts) => {
       for (const can of k.get("fuel")) {
         if (player.pos.dist(can.pos) < 24) grabFuel(can);
       }
+      for (const goggles of k.get("nvg")) {
+        if (player.pos.dist(goggles.pos) < 24) grabNvg(goggles);
+      }
       for (const point of k.get("point")) {
         if (player.pos.dist(point.pos) < 22) grabPoint(point);
       }
@@ -1579,7 +1707,7 @@ k.scene("game", (opts: GameOpts) => {
       });
     } else {
       // Night: torch + line-of-sight stealth.
-      setupNightBoss(boss, player, isTree);
+      setupNightBoss(boss, player, isTree, getNightVision);
     }
   }
 
@@ -1596,19 +1724,23 @@ k.scene("game", (opts: GameOpts) => {
       k.z(6),
       "drone",
     ]);
-    setupLaserDrone(drone, player, playArea, loseLife);
+    setupLaserDrone(drone, player, playArea, loseLife, getNightVision);
   }
 
   // --- Fuel cans ------------------------------------------------------------
-  const spawnFuel = () => {
-    let c = 0;
-    let r = 0;
-    let tries = 0;
-    do {
+  const randomPickupTile = () => {
+    let c = playArea.c0;
+    let r = playArea.r0;
+    for (let tries = 0; tries < 24; tries++) {
       c = k.randi(playArea.c0, playArea.c0 + playArea.cols);
       r = k.randi(playArea.r0, playArea.r0 + playArea.rows);
-      tries++;
-    } while ((isTree(c, r) || isFlowerbed(c, r)) && tries < 20);
+      if (!isTree(c, r) && !isFlowerbed(c, r)) break;
+    }
+    return { c, r };
+  };
+
+  const spawnFuel = () => {
+    const { c, r } = randomPickupTile();
     k.add([
       k.sprite("fuel"),
       k.pos(c * TILE + TILE / 2, HUD_H + r * TILE + TILE / 2),
@@ -1623,7 +1755,36 @@ k.scene("game", (opts: GameOpts) => {
   };
   k.loop(FUEL_SPAWN_EVERY, spawnFuel);
   k.wait(1.5, spawnFuel);
+
+  const spawnNvg = () => {
+    if (!cfg.night || k.get("nvg").length > 0) return;
+    const { c, r } = randomPickupTile();
+    const goggles: any = k.add([
+      k.sprite("nvg"),
+      k.pos(c * TILE + TILE / 2, HUD_H + r * TILE + TILE / 2),
+      k.anchor("center"),
+      k.scale(1.5),
+      k.area({ scale: 0.7 }),
+      k.rotate(0),
+      k.opacity(1),
+      k.z(3),
+      k.lifespan(NVG_PICKUP_LIFETIME, { fade: 0.8 }),
+      "nvg",
+    ]);
+    goggles.homeY = goggles.pos.y;
+    const phase = Math.random() * Math.PI * 2;
+    goggles.onUpdate(() => {
+      goggles.pos.y = goggles.homeY + Math.sin(k.time() * 3.2 + phase) * 2;
+      goggles.angle = Math.sin(k.time() * 4.5 + phase) * 6;
+      goggles.opacity = 0.75 + Math.abs(Math.sin(k.time() * 5 + phase)) * 0.25;
+    });
+  };
+  if (cfg.night) {
+    k.loop(NVG_SPAWN_EVERY, spawnNvg);
+    k.wait(2.5, spawnNvg);
+  }
   player.onCollide("fuel", (can: any) => grabFuel(can));
+  player.onCollide("nvg", (goggles: any) => grabNvg(goggles));
   player.onCollide("point", (point: any) => grabPoint(point));
 
   // --- HUD ------------------------------------------------------------------
@@ -1685,6 +1846,34 @@ k.scene("game", (opts: GameOpts) => {
     k.pos(FB_X, 24),
     k.z(22),
   ]);
+  const NVG_HUD_X = 116;
+  const NVG_HUD_W = 58;
+  const nvgLabel = cfg.night
+    ? k.add([
+        k.text("NVG", { size: 8 }),
+        k.pos(NVG_HUD_X - 27, 25),
+        k.color(...C.grey),
+        k.z(21),
+      ])
+    : null;
+  if (cfg.night) {
+    k.add([
+      k.rect(NVG_HUD_W + 4, 6),
+      k.color(22, 34, 38),
+      k.pos(NVG_HUD_X - 2, 26),
+      k.opacity(0.9),
+      k.z(21),
+    ]);
+  }
+  const nvgBar = cfg.night
+    ? k.add([
+        k.rect(0, 4),
+        k.color(...C.green),
+        k.pos(NVG_HUD_X, 27),
+        k.opacity(0.35),
+        k.z(22),
+      ])
+    : null;
   k.onUpdate(() => {
     scoreLabel.text = `SCORE ${score}`;
     livesLabel.text = `LIVES ${lives}`;
@@ -1692,6 +1881,21 @@ k.scene("game", (opts: GameOpts) => {
     mownLabel.text = `MOWN ${pct}%`;
     fuelBar.width = (fuel / FUEL_MAX) * FB_W;
     fuelBar.color = fuel < FUEL_LOW ? k.rgb(...C.red) : k.rgb(...C.green);
+    if (nvgBar && nvgLabel) {
+      const frac = Math.min(1, nvgCharge / NVG_CHARGE_MAX);
+      const active = nvgActive();
+      nvgBar.width = frac * NVG_HUD_W;
+      nvgBar.opacity = active ? 1 : 0.25;
+      nvgBar.color =
+        nvgPulse > 0
+          ? k.rgb(...C.white)
+          : frac > 0 && frac < 0.25
+            ? k.rgb(...C.yellow)
+            : active
+              ? k.rgb(44, 255, 107)
+              : k.rgb(...C.grey);
+      nvgLabel.color = active ? k.rgb(44, 255, 107) : k.rgb(...C.grey);
+    }
     if (comboCount > 1 && comboTimer > 0) {
       const mult = comboMultFor();
       comboLabel.text = `${comboCount} CHAIN  x${mult}`;
@@ -1895,7 +2099,7 @@ k.scene("nightfall", (data: { score: number; lives: number }) => {
       "It's pitch dark now — but Gertrude is still\n" +
         "out there, and she's got a TORCH.\n\n" +
         "Stay out of her beam. Duck behind the trees\n" +
-        "for cover and keep mowing unseen.",
+        "for cover. Grab NVG goggles to see farther.",
       { size: 14, align: "center", lineSpacing: 6 },
     ),
     k.anchor("center"),
@@ -1960,8 +2164,8 @@ k.scene("laserfall", (data: { score: number; lives: number }) => {
     k.text(
       "Gertrude called in her garden security drone.\n\n" +
         "It paints whole rows and columns before firing.\n" +
-        "Move when the warning line appears, then finish\n" +
-        "the lawn before the battery gives out.",
+        "Move when the warning line appears. NVG charge\n" +
+        "helps in the dark, but the drone lasts longer now.",
       { size: 14, align: "center", lineSpacing: 6 },
     ),
     k.anchor("center"),

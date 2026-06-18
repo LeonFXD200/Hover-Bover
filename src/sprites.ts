@@ -210,6 +210,24 @@ const FUEL = [
   "................",
   "................",
 ];
+const NVG = [
+  "................",
+  "....kk....kk....",
+  "...kGGk..kGGk...",
+  "..kGvvGkkGvvGk..",
+  ".kGvEEvGGvEEvGk.",
+  ".kGvEEvGGvEEvGk.",
+  "..kGvvGkkGvvGk..",
+  "...kGGkkkkGGk...",
+  "....kkkkkkkk....",
+  "...kkvkkkkvkk...",
+  "..kkvvvkkvvvkk..",
+  ".kkv..vkkv..vkk.",
+  "..k....kk....k..",
+  "................",
+  "....vvvvvvvv....",
+  "................",
+];
 const POINT = [
   "................",
   "................",
@@ -329,6 +347,7 @@ const MOWN_PAL: Palette = { t: "#7ec46b", T: "#69b257" };
 // Player 2's freshly-cut stripes — pink, to match the P2 mower.
 const MOWN2_PAL: Palette = { t: "#f4a6c8", T: "#e58cb4" };
 const FUEL_PAL: Palette = { ...PAL, F: "#1b1b29" };
+const NVG_PAL: Palette = { ...PAL, v: "#43ff68", E: "#c7ffd1" };
 
 // Player 2 reuses the mower art with the blue swapped for pink.
 const PAL2: Palette = { ...PAL, b: "#ff5d8f", B: "#c9356b" };
@@ -361,6 +380,7 @@ export const SPRITES: SpriteDef[] = [
     anims: { stomp: { from: 0, to: 1, loop: true, speed: 7 } },
   },
   { name: "fuel", ...makeSprite(FUEL, FUEL_PAL), sliceX: 1 },
+  { name: "nvg", ...makeSprite(NVG, NVG_PAL), sliceX: 1 },
   { name: "point", ...makeSprite(POINT, PAL), sliceX: 1 },
   {
     name: "drone",

@@ -31,6 +31,11 @@ export const sfx = {
     blip(440, 0.08, "sine");
     setTimeout(() => blip(660, 0.1, "sine"), 80);
   },
+  nvg: () => {
+    [523, 784, 1175].forEach((f, i) =>
+      setTimeout(() => blip(f, 0.07, "sine", 0.055), i * 45),
+    );
+  },
   point: () => blip(740 + Math.random() * 70, 0.05, "triangle", 0.045),
   combo: () => {
     [660, 880].forEach((f, i) =>
